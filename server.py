@@ -11,12 +11,18 @@ from werkzeug.utils import secure_filename
 from flask_cors import CORS
 import io
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\tools\tesseract\tesseract.exe"
 app = Flask(__name__)
 CORS(app)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Thread pool for parallel processing
+MAX_WORKERS = min(4, os.cpu_count() or 1)
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
 CATEGORIES = {
     "Udostoverenie": ["удостоверение", "ID"],
@@ -67,30 +73,95 @@ def allowed_file(filename):
     )
 
 
-def extract_text(file_bytes, ext):
+def optimize_image(img, max_size=2000):
+    """Resize image to improve OCR speed while maintaining quality"""
+    if max(img.size) > max_size:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    return img
+
+
+def extract_text(file_bytes, ext, max_pages=3):
+    """
+    Extract text with optimizations:
+    - Only process first few pages of PDFs
+    - Resize images for faster OCR
+    - Use faster OCR config
+    """
+    ocr_config = '--psm 3 --oem 1'  # Faster OCR mode
+
     if ext == ".pdf":
-        images = convert_from_bytes(file_bytes)
-        return "\n".join(pytesseract.image_to_string(img, lang="rus") for img in images)
+        # Only convert first few pages for classification
+        images = convert_from_bytes(file_bytes, first_page=1, last_page=max_pages)
+        texts = []
+        for img in images:
+            img = optimize_image(img)
+            text = pytesseract.image_to_string(img, lang="rus", config=ocr_config)
+            texts.append(text)
+            # Early exit if we have enough text for classification
+            combined = "\n".join(texts)
+            if len(combined) > 500:  # Enough text to classify
+                break
+        return "\n".join(texts)
     else:
         img = Image.open(io.BytesIO(file_bytes))
-        return pytesseract.image_to_string(img, lang="rus")
+        img = optimize_image(img)
+        return pytesseract.image_to_string(img, lang="rus", config=ocr_config)
 
 
+@lru_cache(maxsize=128)
 def classify(text):
-    text = text.lower()
+    """Classify text with caching to avoid reprocessing"""
+    text_lower = text.lower()
     best_match = "Unclassified"
     max_hits = 0
 
     for category, keywords in CATEGORIES.items():
-        hits = sum(1 for keyword in keywords if keyword.lower() in text)
-        print(
-            f"Category: {category}, Hits: {hits}, Hitted Keywords: {[keyword for keyword in keywords if keyword.lower() in text]}"
-        )
+        hits = sum(1 for keyword in keywords if keyword.lower() in text_lower)
+        if hits > 0:
+            print(
+                f"Category: {category}, Hits: {hits}, Matched Keywords: {[keyword for keyword in keywords if keyword.lower() in text_lower]}"
+            )
         if hits > max_hits:
             max_hits = hits
             best_match = category
 
     return best_match
+
+
+def process_single_file(file_data, name, lastname):
+    """Process a single file - designed to run in parallel"""
+    raw_name, file_bytes = file_data
+    ext = os.path.splitext(raw_name)[1].lower()
+
+    if not allowed_file(raw_name):
+        return None
+
+    filename = secure_filename(raw_name)
+
+    # Extract text and classify
+    text = extract_text(file_bytes, ext)
+    print(f"Extracted {len(text)} chars from {filename}")
+    category = classify(text)
+
+    new_name = None
+    if category != "Unclassified":
+        # Generate unique filename
+        existing = [
+            f
+            for f in os.listdir(UPLOAD_FOLDER)
+            if f.startswith(f"{name}_{lastname}_{category}")
+        ]
+        index = len(existing) + 1
+        new_name = f"{name}_{lastname}_{category}{index}{ext}"
+        path = os.path.join(UPLOAD_FOLDER, new_name)
+        with open(path, "wb") as f:
+            f.write(file_bytes)
+
+    return {
+        "original_name": filename,
+        "category": category,
+        "new_name": new_name
+    }
 
 
 @app.route("/upload", methods=["POST"])
@@ -105,41 +176,37 @@ def upload():
     if not files:
         return jsonify({"error": "No files provided"}), 400
 
-    category_counts = {key: 0 for key in CATEGORIES}
-    results = []
-
+    # Read all files into memory first (quick operation)
+    file_data_list = []
     for file in files:
-        raw_name = file.filename
-        ext = os.path.splitext(raw_name)[1].lower()
+        if allowed_file(file.filename):
+            file_data_list.append((file.filename, file.read()))
 
-        if not allowed_file(raw_name):
-            continue
+    if not file_data_list:
+        return jsonify({"error": "No valid files provided"}), 400
 
-        filename = secure_filename(raw_name)
+    print(f"Processing {len(file_data_list)} files in parallel with {MAX_WORKERS} workers...")
 
-        file_bytes = file.read()
-        text = extract_text(file_bytes, ext)
-        print(text[:3000])
-        category = classify(text)
+    # Process files in parallel
+    results = []
+    futures = []
 
-        if category != "Unclassified":
-            existing = [
-                f
-                for f in os.listdir(UPLOAD_FOLDER)
-                if f.startswith(f"{name}_{lastname}_{category}")
-            ]
-            index = len(existing) + 1
-            new_name = f"{name}_{lastname}_{category}{index}{ext}"
-            path = os.path.join(UPLOAD_FOLDER, new_name)
-            with open(path, "wb") as f:
-                f.write(file_bytes)
-        else:
-            new_name = None
+    for file_data in file_data_list:
+        future = executor.submit(process_single_file, file_data, name, lastname)
+        futures.append(future)
 
-        results.append(
-            {"original_name": filename, "category": category, "new_name": new_name}
-        )
+    # Collect results as they complete
+    for future in as_completed(futures):
+        try:
+            result = future.result()
+            if result:
+                results.append(result)
+        except Exception as e:
+            print(f"Error processing file: {e}")
+            import traceback
+            traceback.print_exc()
 
+    print(f"Completed processing {len(results)} files")
     return jsonify(results)
 
 

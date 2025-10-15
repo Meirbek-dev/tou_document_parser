@@ -1,5 +1,6 @@
 import 'dart:async';
-import 'dart:html' as html;
+import 'dart:js_interop';
+import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
@@ -48,26 +49,37 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
       return;
     }
 
-    final uploadInput = html.FileUploadInputElement();
+    final uploadInput = web.HTMLInputElement();
+    uploadInput.type = 'file';
     uploadInput.multiple = true;
     uploadInput.accept = '.pdf,.jpg,.jpeg,.png';
     uploadInput.click();
 
     uploadInput.onChange.listen((event) async {
       final files = uploadInput.files;
-      if (files != null && files.isNotEmpty) {
-        final success = await context.read<DocumentUploadCubit>().uploadFiles(
-          files,
-        );
+      if (files != null && files.length > 0) {
+        final fileList = <web.File>[];
+        for (var i = 0; i < files.length; i++) {
+          final file = files.item(i);
+          if (file != null) {
+            fileList.add(file);
+          }
+        }
 
-        if (!mounted) return;
-        if (success) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Документ(ы) успешно обработаны"),
-              backgroundColor: Colors.green,
-            ),
+        if (fileList.isNotEmpty) {
+          final success = await context.read<DocumentUploadCubit>().uploadFiles(
+            fileList,
           );
+
+          if (!mounted) return;
+          if (success) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text("Документ(ы) успешно обработаны"),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
         }
       }
     });
@@ -264,7 +276,7 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
 
   void setLastName(String lastName) => emit(state.copyWith(lastName: lastName));
 
-  Future<bool> uploadFiles(List<html.File> files) async {
+  Future<bool> uploadFiles(List<web.File> files) async {
     if (state.isLoading) return false;
 
     emit(state.copyWith(isLoading: true));
@@ -272,20 +284,19 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
     final completer = Completer<bool>();
     bool isCompleted = false; // Add flag to prevent double completion
 
-    final formData = html.FormData();
+    final formData = web.FormData();
     for (final file in files) {
-      formData.appendBlob('files', file, file.name);
+      formData.append('files', file);
     }
 
-    formData.append('name', state.name);
-    formData.append('lastname', state.lastName);
+    formData.append('name', state.name.toJS);
+    formData.append('lastname', state.lastName.toJS);
 
-    final request = html.HttpRequest();
-    request
-      ..open('POST', 'http://127.0.0.1:5040/upload')
-      ..responseType = 'json';
+    final request = web.XMLHttpRequest();
+    request.open('POST', 'http://127.0.0.1:5040/upload');
+    request.responseType = 'json';
 
-    request.onLoadEnd.listen((_) {
+    request.addEventListener('loadend', (web.Event event) {
       if (isCompleted) return; // Prevent double completion
       isCompleted = true;
 
@@ -293,32 +304,35 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
 
       if (request.status == 200) {
         final response = request.response;
-        if (response is List) {
-          final uploaded =
-              response
-                  .map(
-                    (item) =>
-                        UploadedFile.fromJson(Map<String, dynamic>.from(item)),
-                  )
-                  .toList();
-          emit(state.copyWith(files: [...state.files, ...uploaded]));
-          completer.complete(true);
-          return;
+        if (response != null) {
+          final responseData = response.dartify();
+          if (responseData is List) {
+            final uploaded =
+                responseData
+                    .map(
+                      (item) =>
+                          UploadedFile.fromJson(Map<String, dynamic>.from(item)),
+                    )
+                    .toList();
+            emit(state.copyWith(files: [...state.files, ...uploaded]));
+            completer.complete(true);
+            return;
+          }
         }
       }
 
       print('Upload failed: ${request.status}');
       completer.complete(false);
-    });
+    }.toJS);
 
-    request.onError.listen((e) {
+    request.addEventListener('error', (web.Event event) {
       if (isCompleted) return; // Prevent double completion
       isCompleted = true;
 
-      print('Network error: $e');
+      print('Network error');
       emit(state.copyWith(isLoading: false));
       completer.complete(false);
-    });
+    }.toJS);
 
     request.send(formData);
 
@@ -333,39 +347,44 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
       return;
     }
 
-    final url = Uri.parse(
-      'http://127.0.0.1:5040/delete_file?filename=${Uri.encodeComponent(file.newName!)}',
-    );
+    final url = 'http://127.0.0.1:5040/delete_file?filename=${Uri.encodeComponent(file.newName!)}';
 
-    html.HttpRequest.request(url.toString(), method: 'DELETE')
-        .then((_) {
-          final updated =
-              state.files.where((f) => f.newName != file.newName).toList();
-          emit(state.copyWith(files: updated));
-        })
-        .catchError((error) {
-          print('Delete failed: $error');
-        });
+    final request = web.XMLHttpRequest();
+    request.open('DELETE', url);
+
+    request.addEventListener('loadend', (web.Event event) {
+      if (request.status == 200) {
+        final updated =
+            state.files.where((f) => f.newName != file.newName).toList();
+        emit(state.copyWith(files: updated));
+      } else {
+        print('Delete failed: ${request.status}');
+      }
+    }.toJS);
+
+    request.addEventListener('error', (web.Event event) {
+      print('Delete failed');
+    }.toJS);
+
+    request.send();
   }
 
   void downloadFile(UploadedFile file) {
     if (file.newName != null) {
-          html.AnchorElement(
-              href: 'http://127.0.0.1:5040/files/${file.newName}',
-            )
-            ..setAttribute("download", file.newName!)
-            ..click();
+      final anchor = web.HTMLAnchorElement();
+      anchor.href = 'http://127.0.0.1:5040/files/${file.newName}';
+      anchor.setAttribute('download', file.newName!);
+      anchor.click();
     }
   }
 
   void downloadAll() {
-    final url = Uri.parse(
-      'http://127.0.0.1:5040/download_zip?name=${state.name}&lastname=${state.lastName}',
-    );
+    final url = 'http://127.0.0.1:5040/download_zip?name=${state.name}&lastname=${state.lastName}';
 
-    html.AnchorElement(href: url.toString())
-      ..setAttribute("download", "documents.zip")
-      ..click();
+    final anchor = web.HTMLAnchorElement();
+    anchor.href = url;
+    anchor.setAttribute('download', 'documents.zip');
+    anchor.click();
   }
 
   void reset() =>
