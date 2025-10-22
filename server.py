@@ -1,7 +1,13 @@
 import os
+import sys
 
 # Set paths before importing pytesseract
-os.environ["TESSDATA_PREFIX"] = r"C:\tools\tesseract\tessdata"
+# Check if running in Docker or Windows
+if sys.platform == "win32":
+    os.environ["TESSDATA_PREFIX"] = r"C:\tools\tesseract\tessdata"
+else:
+    # Linux/Docker environment
+    os.environ["TESSDATA_PREFIX"] = os.getenv("TESSDATA_PREFIX", "/usr/share/tesseract-ocr/5/tessdata/")
 
 import pytesseract
 from PIL import Image
@@ -14,7 +20,12 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 
-pytesseract.pytesseract.tesseract_cmd = r"C:\tools\tesseract\tesseract.exe"
+# Set tesseract command path based on platform
+if sys.platform == "win32":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\tools\tesseract\tesseract.exe"
+else:
+    # In Docker/Linux, tesseract is in PATH
+    pytesseract.pytesseract.tesseract_cmd = "tesseract"
 app = Flask(__name__)
 CORS(app)
 UPLOAD_FOLDER = "uploads"
@@ -247,5 +258,26 @@ def delete_file():
     return jsonify({"error": "File not found"}), 404
 
 
+# Serve Flutter web app
+@app.route("/")
+def index():
+    return send_from_directory("build/web", "index.html")
+
+
+@app.route("/<path:path>")
+def serve_static(path):
+    # Serve files from build/web (compiled Flutter web app)
+    build_web_path = os.path.join("build/web", path)
+    if os.path.exists(build_web_path):
+        return send_from_directory("build/web", path)
+
+    # If not found, serve index.html for client-side routing (SPA behavior)
+    return send_from_directory("build/web", "index.html")
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5040, debug=True)
+    # Get port from environment variable or default to 5040
+    port = int(os.getenv("PORT", 5040))
+    # Disable debug in production
+    debug = os.getenv("FLASK_ENV", "production") != "production"
+    app.run(host="0.0.0.0", port=port, debug=debug)

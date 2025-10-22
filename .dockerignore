@@ -1,0 +1,43 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter/Dart build files (not needed in Docker)
+.dart_tool/
+.fvm/
+android/
+ios/
+linux/
+macos/
+windows/
+lib/
+*.lock
+.flutter-plugins*
+.metadata
+.packages
+.gitignore
+*.iml
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+
+# Python version manager
+.python-version
