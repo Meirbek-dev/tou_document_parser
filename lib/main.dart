@@ -635,7 +635,8 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
     formData.append('lastname', state.lastName.toJS);
 
     final request = web.XMLHttpRequest();
-    request.open('POST', 'http://127.0.0.1:5040/upload');
+    final origin = web.window.location.origin;
+    request.open('POST', '$origin/upload');
     request.responseType = 'json';
 
     request.addEventListener(
@@ -696,8 +697,9 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
       return;
     }
 
+    final origin = web.window.location.origin;
     final url =
-        'http://127.0.0.1:5040/delete_file?filename=${Uri.encodeComponent(file.newName!)}';
+        '$origin/delete_file?filename=${Uri.encodeComponent(file.newName!)}';
 
     final request = web.XMLHttpRequest();
     request.open('DELETE', url);
@@ -728,15 +730,17 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
   void downloadFile(UploadedFile file) {
     if (file.newName != null) {
       final anchor = web.HTMLAnchorElement();
-      anchor.href = 'http://127.0.0.1:5040/files/${file.newName}';
+      final origin = web.window.location.origin;
+      anchor.href = '$origin/files/${Uri.encodeComponent(file.newName!)}';
       anchor.setAttribute('download', file.newName!);
       anchor.click();
     }
   }
 
   void downloadAll() {
+    final origin = web.window.location.origin;
     final url =
-        'http://127.0.0.1:5040/download_zip?name=${state.name}&lastname=${state.lastName}';
+        '$origin/download_zip?name=${Uri.encodeComponent(state.name)}&lastname=${Uri.encodeComponent(state.lastName)}';
 
     final anchor = web.HTMLAnchorElement();
     anchor.href = url;
