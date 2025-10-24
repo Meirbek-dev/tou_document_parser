@@ -19,6 +19,8 @@ import io
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
+import logging
+import tempfile
 
 # Set tesseract command path based on platform
 if sys.platform == "win32":
@@ -30,6 +32,14 @@ app = Flask(__name__)
 CORS(app)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Basic logging for production visibility
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+logger = logging.getLogger(__name__)
+
+# Configuration: limits and settings (can be overridden with env vars)
+MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 100 * 1024 * 1024))  # 50 MB per file
+MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE", 500 * 1024 * 1024))  # 500 MB total
 
 # Thread pool for parallel processing
 MAX_WORKERS = min(4, os.cpu_count() or 1)
@@ -79,9 +89,10 @@ ALLOWED_EXTENSIONS = {"pdf", "jpg", "jpeg", "png"}
 
 
 def allowed_file(filename):
-    return any(
-        filename.lower().endswith(ext) for ext in [".pdf", ".jpg", ".jpeg", ".png"]
-    )
+    if not filename:
+        return False
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in {".pdf", ".jpg", ".jpeg", ".png"}
 
 
 def optimize_image(img, max_size=2000):
@@ -91,7 +102,7 @@ def optimize_image(img, max_size=2000):
     return img
 
 
-def extract_text(file_bytes, ext, max_pages=3):
+def extract_text(file_bytes, ext, max_pages=10):
     """
     Extract text with optimizations:
     - Only process first few pages of PDFs
@@ -140,39 +151,64 @@ def classify(text):
 
 
 def process_single_file(file_data, name, lastname):
-    """Process a single file - designed to run in parallel"""
-    raw_name, file_bytes = file_data
+    """Process a single file - designed to run in parallel.
+
+    Expects file_data as (original_name, temp_path). Reads the temp file
+    contents in a controlled way, classifies and optionally stores the file.
+    Always attempts to remove the temporary file.
+    """
+    raw_name, tmp_path = file_data
     ext = os.path.splitext(raw_name)[1].lower()
 
     if not allowed_file(raw_name):
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
         return None
 
     filename = secure_filename(raw_name)
 
-    # Extract text and classify
-    text = extract_text(file_bytes, ext)
-    print(f"Extracted {len(text)} chars from {filename}")
-    category = classify(text)
+    try:
+        with open(tmp_path, "rb") as fh:
+            file_bytes = fh.read()
 
-    new_name = None
-    if category != "Unclassified":
-        # Generate unique filename
-        existing = [
-            f
-            for f in os.listdir(UPLOAD_FOLDER)
-            if f.startswith(f"{name}_{lastname}_{category}")
-        ]
-        index = len(existing) + 1
-        new_name = f"{name}_{lastname}_{category}{index}{ext}"
-        path = os.path.join(UPLOAD_FOLDER, new_name)
-        with open(path, "wb") as f:
-            f.write(file_bytes)
+        # Extract text and classify
+        text = extract_text(file_bytes, ext)
+        logger.info("Extracted %d chars from %s", len(text), filename)
+        category = classify(text)
 
-    return {
-        "original_name": filename,
-        "category": category,
-        "new_name": new_name
-    }
+        new_name = None
+        if category != "Unclassified":
+            # sanitize name/lastname for filesystem usage
+            def safe_part(s: str) -> str:
+                if not s:
+                    return "anon"
+                safe = "".join(c for c in s if c.isalnum() or c in ('_', '-'))
+                return safe or "anon"
+
+            base_name = f"{safe_part(name)}_{safe_part(lastname)}_{category}"
+
+            # Generate unique filename
+            index = 1
+            while True:
+                candidate = f"{base_name}{index}{ext}"
+                path = os.path.join(UPLOAD_FOLDER, candidate)
+                if not os.path.exists(path):
+                    new_name = candidate
+                    break
+                index += 1
+
+            with open(path, "wb") as f:
+                f.write(file_bytes)
+
+        return {"original_name": filename, "category": category, "new_name": new_name}
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
 
 
 @app.route("/upload", methods=["POST"])
@@ -183,42 +219,86 @@ def upload():
     if not name or not lastname:
         return jsonify({"error": "Name and Lastname required"}), 400
 
+    # Basic request size guard
+    content_length = request.content_length
+    if content_length and content_length > MAX_REQUEST_SIZE:
+        return jsonify({"error": "Request too large"}), 413
+
     files = request.files.getlist("files")
     if not files:
         return jsonify({"error": "No files provided"}), 400
 
-    # Read all files into memory first (quick operation)
-    file_data_list = []
-    for file in files:
-        if allowed_file(file.filename):
-            file_data_list.append((file.filename, file.read()))
+    # Save each uploaded file to a temporary file on disk and validate size
+    file_data_list = []  # tuples of (original_name, temp_path)
+    try:
+        for file_storage in files:
+            if not file_storage or not file_storage.filename:
+                continue
 
-    if not file_data_list:
-        return jsonify({"error": "No valid files provided"}), 400
+            original_name = file_storage.filename
 
-    print(f"Processing {len(file_data_list)} files in parallel with {MAX_WORKERS} workers...")
+            if not allowed_file(original_name):
+                logger.warning("Rejected disallowed file type: %s", original_name)
+                continue
 
-    # Process files in parallel
-    results = []
-    futures = []
+            # Check MIME type if provided
+            content_type = file_storage.mimetype
+            if content_type:
+                if not (content_type.startswith("image/") or content_type == "application/pdf"):
+                    logger.warning("Rejected unexpected content-type %s for %s", content_type, original_name)
+                    continue
 
-    for file_data in file_data_list:
-        future = executor.submit(process_single_file, file_data, name, lastname)
-        futures.append(future)
+            # Stream to temporary file and enforce per-file size
+            tmp_fd, tmp_path = tempfile.mkstemp(prefix="upload_", suffix=os.path.splitext(original_name)[1])
+            os.close(tmp_fd)
+            total = 0
+            try:
+                with open(tmp_path, "wb") as out_f:
+                    chunk = file_storage.stream.read(8192)
+                    while chunk:
+                        total += len(chunk)
+                        if total > MAX_FILE_SIZE:
+                            raise ValueError("File too large")
+                        out_f.write(chunk)
+                        chunk = file_storage.stream.read(8192)
+            except Exception as e:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+                logger.exception("Error saving uploaded file %s: %s", original_name, e)
+                return jsonify({"error": "Failed to save uploaded file"}), 400
 
-    # Collect results as they complete
-    for future in as_completed(futures):
-        try:
-            result = future.result()
-            if result:
-                results.append(result)
-        except Exception as e:
-            print(f"Error processing file: {e}")
-            import traceback
-            traceback.print_exc()
+            file_data_list.append((original_name, tmp_path))
 
-    print(f"Completed processing {len(results)} files")
-    return jsonify(results)
+        if not file_data_list:
+            return jsonify({"error": "No valid files uploaded"}), 400
+
+        logger.info("Processing %d files in parallel with %d workers", len(file_data_list), MAX_WORKERS)
+
+        # Process files in parallel
+        results = []
+        futures = [executor.submit(process_single_file, file_data, name, lastname) for file_data in file_data_list]
+
+        # Collect results as they complete
+        for future in as_completed(futures):
+            try:
+                res = future.result()
+                if res:
+                    results.append(res)
+            except Exception as e:
+                logger.exception("Error processing file: %s", e)
+
+        logger.info("Completed processing %d files", len(results))
+        return jsonify(results)
+    finally:
+        # Cleanup any temporary files that might remain (defensive)
+        for _, tmp_path in file_data_list:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 @app.route("/files/<filename>")
