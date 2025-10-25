@@ -1314,17 +1314,54 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
           if (response != null) {
             final responseData = response.dartify();
             if (responseData is List) {
-              final uploaded =
-                  responseData
-                      .map(
-                        (item) => UploadedFile.fromJson(
-                          Map<String, dynamic>.from(item),
-                        ),
-                      )
-                      .toList();
-              emit(state.copyWith(files: [...state.files, ...uploaded]));
-              completer.complete(true);
-              return;
+              // After upload, refresh authoritative server list to avoid
+              // client-server drift and to obtain server-generated ids.
+              try {
+                final filesUrl = '${getBackendOrigin()}/files';
+                final listReq = web.XMLHttpRequest();
+                listReq.open('GET', filesUrl);
+                listReq.responseType = 'json';
+                listReq.addEventListener(
+                  'loadend',
+                  (web.Event ev) {
+                    try {
+                      final listResp = listReq.response;
+                      if (listResp != null) {
+                        final listData = listResp.dartify();
+                        if (listData is List) {
+                          final authoritative =
+                              listData
+                                  .map(
+                                    (item) => UploadedFile.fromJson(
+                                      Map<String, dynamic>.from(item),
+                                    ),
+                                  )
+                                  .toList();
+                          emit(state.copyWith(files: authoritative));
+                          completer.complete(true);
+                          return;
+                        }
+                      }
+                    } catch (_) {}
+                    // fallback to original response mapping if list failed
+                    final uploaded =
+                        responseData
+                            .map(
+                              (item) => UploadedFile.fromJson(
+                                Map<String, dynamic>.from(item),
+                              ),
+                            )
+                            .toList();
+                    emit(state.copyWith(files: [...state.files, ...uploaded]));
+                    completer.complete(true);
+                    return;
+                  }.toJS,
+                );
+                listReq.send();
+                return;
+              } catch (e) {
+                debugPrint('Failed to refresh files after upload: $e');
+              }
             }
           }
         }
@@ -1368,7 +1405,7 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
     }
 
     final url =
-        '${getBackendOrigin()}/delete_file?filename=${Uri.encodeComponent(file.newName!)}';
+        '${getBackendOrigin()}/delete_file?file_id=${Uri.encodeComponent(file.id ?? '')}';
     debugPrint('DELETE -> $url');
 
     final request = web.XMLHttpRequest();
@@ -1378,9 +1415,38 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
       'loadend',
       (web.Event event) {
         if (request.status == 200) {
-          final updated =
-              state.files.where((f) => f.newName != file.newName).toList();
-          emit(state.copyWith(files: updated));
+          // Refresh authoritative list after successful deletion
+          final listReq = web.XMLHttpRequest();
+          final filesUrl = '${getBackendOrigin()}/files';
+          listReq.open('GET', filesUrl);
+          listReq.responseType = 'json';
+          listReq.addEventListener(
+            'loadend',
+            (web.Event e) {
+              try {
+                final resp = listReq.response;
+                if (resp != null) {
+                  final listData = resp.dartify();
+                  if (listData is List) {
+                    final authoritative =
+                        listData
+                            .map(
+                              (item) => UploadedFile.fromJson(
+                                Map<String, dynamic>.from(item),
+                              ),
+                            )
+                            .toList();
+                    emit(state.copyWith(files: authoritative));
+                    return;
+                  }
+                }
+              } catch (_) {}
+              final updated =
+                  state.files.where((f) => f.newName != file.newName).toList();
+              emit(state.copyWith(files: updated));
+            }.toJS,
+          );
+          listReq.send();
         } else {
           debugPrint('Delete failed: ${request.status}');
         }
@@ -1405,12 +1471,12 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
   }
 
   void downloadFile(UploadedFile file) {
-    if (file.newName != null) {
+    if (file.id != null) {
       final anchor = web.HTMLAnchorElement();
       anchor.href =
-          '${getBackendOrigin()}/files/${Uri.encodeComponent(file.newName!)}';
+          '${getBackendOrigin()}/files/${Uri.encodeComponent(file.id!)}';
       debugPrint('Downloading file from: ${anchor.href}');
-      anchor.setAttribute('download', file.newName!);
+      anchor.setAttribute('download', file.newName ?? file.originalName);
       anchor.click();
     }
   }
@@ -1432,13 +1498,17 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
 
 class UploadedFile {
   final String originalName;
+  final String? id;
   final String? newName;
+  final String? filename;
   final String category;
   final UploadStatus status;
 
   UploadedFile({
     required this.originalName,
     this.newName,
+    this.id,
+    this.filename,
     required this.category,
     this.status = UploadStatus.done,
   });
@@ -1446,7 +1516,9 @@ class UploadedFile {
   factory UploadedFile.fromJson(Map<String, dynamic> json) {
     return UploadedFile(
       originalName: json['original_name'] as String,
-      newName: json['new_name'] as String?,
+      newName: (json['filename'] as String?) ?? json['new_name'] as String?,
+      id: json['id'] as String?,
+      filename: json['filename'] as String?,
       category: json['category'] as String,
       status: UploadStatus.done,
     );
