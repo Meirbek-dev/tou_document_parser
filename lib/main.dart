@@ -375,8 +375,10 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
                             children: [
                               Image.asset(
                                 logoAsset,
-                                height: 40,
-                                width: 40,
+                                // Increase height so the 360x120 logos render larger
+                                // in the AppBar. Leave width unspecified so the
+                                // aspect ratio from the original image is preserved.
+                                height: 48,
                                 fit: BoxFit.contain,
                                 errorBuilder:
                                     (ctx, error, stack) =>
@@ -442,7 +444,8 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
           ),
           body: Stack(
             children: [
-              Center(
+              Align(
+                alignment: Alignment.topCenter,
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 980),
                   child: SingleChildScrollView(
@@ -637,11 +640,15 @@ class ApplicantCard extends StatelessWidget {
                   color: colorScheme.primary,
                 ),
                 const SizedBox(width: 12),
-                Text(
-                  strings['appHeader']!,
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w700,
-                    color: colorScheme.primary,
+                Expanded(
+                  child: Text(
+                    strings['appHeader']!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: colorScheme.primary,
+                    ),
                   ),
                 ),
               ],
@@ -867,30 +874,41 @@ class FilesList extends StatelessWidget {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      Row(
-                        children: [
-                          Checkbox(
-                            value:
-                                selected.isNotEmpty &&
-                                selected.length == files.length,
-                            onChanged: (_) => toggleSelectAll(files),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Загруженные документы (${files.length})',
-                            style: Theme.of(context).textTheme.titleMedium
-                                ?.copyWith(fontWeight: FontWeight.w600),
-                          ),
-                        ],
+                      // Left group: checkbox + title. Make flexible so it can shrink.
+                      Expanded(
+                        child: Row(
+                          children: [
+                            Checkbox(
+                              value:
+                                  selected.isNotEmpty &&
+                                  selected.length == files.length,
+                              onChanged: (_) => toggleSelectAll(files),
+                            ),
+                            const SizedBox(width: 6),
+                            // Title should ellipsize when space is tight
+                            Expanded(
+                              child: Text(
+                                'Загруженные документы (${files.length})',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                      Row(
+
+                      // Right group: buttons. Use Wrap so they can move to the next
+                      // line or compress on narrow widths instead of overflowing.
+                      Wrap(
+                        spacing: 8,
                         children: [
                           FilledButton.tonalIcon(
                             onPressed: downloadAll,
                             icon: const Icon(Icons.download),
                             label: const Text('Скачать всё'),
                           ),
-                          const SizedBox(width: 8),
                           FilledButton.tonalIcon(
                             onPressed:
                                 selected.isNotEmpty
