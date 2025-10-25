@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:js_interop';
 import 'package:web/web.dart' as web;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
@@ -46,21 +47,36 @@ class TouDocumentApp extends StatelessWidget {
   ThemeData _baseTheme(ColorScheme scheme) => ThemeData(
     useMaterial3: true,
     colorScheme: scheme,
+    visualDensity: VisualDensity.adaptivePlatformDensity,
+    scaffoldBackgroundColor: scheme.surface,
+    appBarTheme: AppBarTheme(
+      backgroundColor: scheme.primaryContainer,
+      foregroundColor: scheme.onPrimaryContainer,
+      elevation: 0,
+      centerTitle: true,
+    ),
     cardTheme: const CardThemeData(
       elevation: 2,
       margin: EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.all(Radius.circular(12)),
+      ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       filled: true,
-      fillColor:
-          scheme.brightness == Brightness.light
-              ? Colors.grey.shade50
-              : Colors.grey.shade800,
+      fillColor: scheme.surfaceContainerHighest,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
     ),
     elevatedButtonTheme: ElevatedButtonThemeData(
       style: ElevatedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     ),
@@ -111,19 +127,86 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
   // Selection for bulk actions (use originalName as identifier)
   final Set<String> _selected = <String>{};
 
-
   // Focus nodes for keyboard accessibility
   late final FocusNode _nameFocus;
   late final FocusNode _lastFocus;
 
-  // Drag-over visual state for web
-  bool _dragOver = false;
+  // Page-level drag indicator (web)
+  bool _dragActive = false;
+
+  // Upload card hover state for micro-interactions
+  bool _uploadHover = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameFocus = FocusNode();
+    _lastFocus = FocusNode();
+
+    if (kIsWeb) {
+      // page-level drag listeners for web
+      web.window.addEventListener(
+        'dragover',
+        (web.Event event) {
+          try {
+            event.preventDefault();
+          } catch (_) {}
+          if (!mounted) return;
+          setState(() => _dragActive = true);
+        }.toJS,
+      );
+
+      web.window.addEventListener(
+        'dragleave',
+        (web.Event event) {
+          if (!mounted) return;
+          setState(() => _dragActive = false);
+        }.toJS,
+      );
+
+      web.window.addEventListener(
+        'drop',
+        (web.Event event) {
+          try {
+            event.preventDefault();
+          } catch (_) {}
+          if (!mounted) return;
+          setState(() => _dragActive = false);
+
+          final dt = (event as dynamic).dataTransfer;
+          if (dt != null) {
+            final files = dt.files;
+            if (files != null && (files as dynamic).length > 0) {
+              final fileList = <web.File>[];
+              final len = (files as dynamic).length as int;
+              for (var i = 0; i < len; i++) {
+                final f = (files as dynamic).item(i);
+                if (f != null) fileList.add(f as web.File);
+              }
+              // gentle haptic cue on accepted drop
+              HapticFeedback.selectionClick();
+              // call upload but don't await inside event handler
+              context.read<DocumentUploadCubit>().uploadFiles(fileList);
+            }
+          }
+        }.toJS,
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    nameController.dispose();
+    lastNameController.dispose();
+    _nameFocus.dispose();
+    _lastFocus.dispose();
+    super.dispose();
+  }
 
   bool _isFormValid() {
     final name = nameController.text.trim();
     final last = lastNameController.text.trim();
     if (name.length < 2 || last.length < 2) return false;
-    // simple rule: no digits in name fields
     final noDigits = RegExp(r'^[^0-9]+$');
     return noDigits.hasMatch(name) && noDigits.hasMatch(last);
   }
@@ -150,11 +233,9 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
   }
 
   void pickFiles() {
-    // Prevent picking files if form invalid or loading
     final cubit = context.read<DocumentUploadCubit>();
     final state = cubit.state;
     if (state.isLoading) return;
-
 
     final uploadInput = web.HTMLInputElement();
     uploadInput.type = 'file';
@@ -162,226 +243,73 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
     uploadInput.accept = '.pdf,.jpg,.jpeg,.png';
     uploadInput.click();
 
-    uploadInput.onChange.listen((event) async {
+    uploadInput.onChange.listen((_) async {
       final files = uploadInput.files;
       if (files != null && files.length > 0) {
         final fileList = <web.File>[];
-        for (var i = 0; i < files.length; i++) {
-          final file = files.item(i);
-          if (file != null) fileList.add(file);
+        final len = files.length;
+        for (var i = 0; i < len; i++) {
+          final f = files.item(i);
+          if (f != null) fileList.add(f);
         }
-
-        if (fileList.isNotEmpty) {
-              // Start upload and attach handlers so we can show immediate
-              // feedback from the drop action without making this callback
-              // async. The cubit still manages loading state for the UI.
-              cubit.uploadFiles(fileList).then((success) {
-                if (!mounted) return;
-                if (success) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: [
-                          const Icon(Icons.check_circle_outline, color: Colors.white),
-                          const SizedBox(width: 12),
-                          Expanded(child: Text(strings['uploadSuccess']!)),
-                        ],
-                      ),
-                      backgroundColor: Colors.green.shade600,
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      duration: const Duration(seconds: 4),
-                    ),
-                  );
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Row(
-                        children: const [
-                          Icon(Icons.error_outline, color: Colors.white),
-                          SizedBox(width: 12),
-                          Expanded(child: Text('Ошибка при загрузке файлов.')),
-                        ],
-                      ),
-                      backgroundColor: Colors.red.shade600,
-                      behavior: SnackBarBehavior.floating,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      duration: const Duration(seconds: 5),
-                      action: SnackBarAction(
-                        label: 'Повторить',
-                        textColor: Colors.white,
-                        onPressed: () => pickFiles(),
-                      ),
-                    ),
-                  );
-                }
-              }).catchError((e, st) {
-                // Unexpected error — show failure and allow retry
-                if (!mounted) return;
-                debugPrint('Drop upload error: $e');
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Row(
-                      children: const [
-                        Icon(Icons.error_outline, color: Colors.white),
-                        SizedBox(width: 12),
-                        Expanded(child: Text('Ошибка при загрузке файлов.')),
-                      ],
-                    ),
-                    backgroundColor: Colors.red.shade600,
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    duration: const Duration(seconds: 5),
-                    action: SnackBarAction(
-                      label: 'Повторить',
-                      textColor: Colors.white,
-                      onPressed: () => pickFiles(),
-                    ),
-                  ),
-                );
-              });
-        }
+        HapticFeedback.selectionClick();
+        await cubit.uploadFiles(fileList);
       }
     });
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _nameFocus = FocusNode();
-    _lastFocus = FocusNode();
-
-    if (kIsWeb) {
-      try {
-        web.window.addEventListener(
-          'dragover',
-          (web.Event e) {
-            e.preventDefault();
-            if (!mounted) return;
-            setState(() => _dragOver = true);
-          }.toJS,
-        );
-
-        web.window.addEventListener(
-          'dragleave',
-          (web.Event e) {
-            e.preventDefault();
-            if (!mounted) return;
-            setState(() => _dragOver = false);
-          }.toJS,
-        );
-
-        web.window.addEventListener(
-          'drop',
-          (web.Event event) {
-            // Keep this handler synchronous (no Future return) so it can be
-            // converted to JS via `toJS`. We invoke uploadFiles but do not
-            // await it here — upload runs asynchronously but the callback
-            // itself returns void.
-            event.preventDefault();
-            if (!mounted) return;
-            setState(() => _dragOver = false);
-            final de = event as web.DragEvent;
-            final files = de.dataTransfer?.files;
-            if (files != null && files.length > 0) {
-              final fileList = <web.File>[];
-              for (var i = 0; i < files.length; i++) {
-                final file = files.item(i);
-                if (file != null) fileList.add(file);
-              }
-              if (fileList.isNotEmpty) {
-                final cubit = context.read<DocumentUploadCubit>();
-                // Fire-and-forget the upload. The cubit manages its own
-                // loading state and will update UI when complete.
-                cubit.uploadFiles(fileList);
-              }
-            }
-          }.toJS,
-        );
-      } catch (_) {
-        // ignore: no-op for non-web environments
-      }
-    }
-  }
-
-  @override
-  void dispose() {
-    _nameFocus.dispose();
-    _lastFocus.dispose();
-    nameController.dispose();
-    lastNameController.dispose();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return Scaffold(
-      backgroundColor: colorScheme.surface,
-      appBar: AppBar(
-        elevation: 0,
-        backgroundColor: colorScheme.primaryContainer,
-        toolbarHeight: 80,
-        centerTitle: true,
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Image.asset('assets/logo.png', height: 48),
-            const SizedBox(width: 12),
-            Text(
-              'AI Reception',
-              style: TextStyle(
-                color: colorScheme.onPrimaryContainer,
-                fontWeight: FontWeight.bold,
-                fontSize: 24,
+    return BlocBuilder<DocumentUploadCubit, DocumentUploadState>(
+      builder: (context, state) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final logoAsset =
+            isDark ? 'assets/logo_light.png' : 'assets/logo_dark.png';
+
+        return Scaffold(
+          appBar: AppBar(
+            title: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Image.asset(
+                  logoAsset,
+                  height: 36,
+                  errorBuilder: (ctx, error, stack) => const SizedBox.shrink(),
+                ),
+                const SizedBox(width: 12),
+                Text(strings['appTitle']!),
+              ],
+            ),
+            actions: [
+              IconButton(
+                tooltip: 'Переключить тему',
+                icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
+                onPressed:
+                    () =>
+                        _themeModeNotifier.value =
+                            isDark ? ThemeMode.light : ThemeMode.dark,
               ),
-            ),
-          ],
-        ),
-        actions: [
-          IconButton(
-            tooltip: 'Переключить тему',
-            icon: ValueListenableBuilder<ThemeMode>(
-              valueListenable: _themeModeNotifier,
-              builder: (context, mode, _) {
-                return Icon(
-                  mode == ThemeMode.dark ? Icons.dark_mode : Icons.light_mode,
-                );
-              },
-            ),
-            onPressed: () {
-              _themeModeNotifier.value =
-                  _themeModeNotifier.value == ThemeMode.dark
-                      ? ThemeMode.light
-                      : ThemeMode.dark;
-            },
+            ],
           ),
-        ],
-      ),
-      body: BlocBuilder<DocumentUploadCubit, DocumentUploadState>(
-        builder: (context, state) {
-          return Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 1200),
-              child: Stack(
-                children: [
-                  SingleChildScrollView(
-                    padding: const EdgeInsets.all(24),
+          body: Stack(
+            children: [
+              Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 980),
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 28,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        // Header Section
+                        // Applicant info card
                         Card(
-                          elevation: 4,
                           child: Padding(
-                            padding: const EdgeInsets.all(24),
+                            padding: const EdgeInsets.all(20),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -389,379 +317,498 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
                                   children: [
                                     Icon(
                                       Icons.person_outline,
-                                      size: 32,
+                                      size: 28,
                                       color: colorScheme.primary,
                                     ),
                                     const SizedBox(width: 12),
                                     Text(
-                                      'Информация об абитуриенте',
+                                      strings['appHeader']!,
                                       style: Theme.of(
                                         context,
-                                      ).textTheme.headlineSmall?.copyWith(
-                                        fontWeight: FontWeight.bold,
+                                      ).textTheme.titleLarge?.copyWith(
+                                        fontWeight: FontWeight.w700,
                                         color: colorScheme.primary,
                                       ),
                                     ),
                                   ],
                                 ),
-                                const SizedBox(height: 24),
+                                const SizedBox(height: 18),
                                 Form(
                                   key: _formKey,
-                                  child: Row(
+                                  child: Column(
                                     children: [
-                                      Expanded(
-                                        child: TextFormField(
-                                          controller: nameController,
-                                          enabled: !state.isLoading,
-                                          decoration: const InputDecoration(
-                                            labelText: 'Имя',
-                                            prefixIcon: Icon(
-                                              Icons.badge_outlined,
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller: nameController,
+                                              enabled: !state.isLoading,
+                                              decoration: InputDecoration(
+                                                labelText: strings['nameLabel'],
+                                                prefixIcon: const Icon(
+                                                  Icons.person,
+                                                ),
+                                              ),
+                                              validator: (value) {
+                                                final v = value?.trim() ?? '';
+                                                if (v.isEmpty) {
+                                                  return 'Имя обязательно';
+                                                }
+                                                if (v.length < 2) {
+                                                  return 'Слишком короткое имя';
+                                                }
+                                                if (RegExp(
+                                                  r'[0-9]',
+                                                ).hasMatch(v)) {
+                                                  return 'Имя не должно содержать цифр';
+                                                }
+                                                return null;
+                                              },
+                                              onChanged:
+                                                  (v) => context
+                                                      .read<
+                                                        DocumentUploadCubit
+                                                      >()
+                                                      .setName(v),
                                             ),
-                                            hintText: 'Введите имя',
                                           ),
-                                          validator: (value) {
-                                            final v = value?.trim() ?? '';
-                                            if (v.isEmpty) {
-                                              return 'Имя обязательно';
-                                            }
-                                            if (v.length < 2) {
-                                              return 'Имя слишком короткое';
-                                            }
-                                            if (RegExp(r'[0-9]').hasMatch(v)) {
-                                              return 'Имя не должно содержать цифр';
-                                            }
-                                            return null;
-                                          },
-                                          onChanged: (value) {
-                                            context
-                                                .read<DocumentUploadCubit>()
-                                                .setName(value);
-                                            setState(() {});
-                                          },
-                                        ),
-                                      ),
-                                      const SizedBox(width: 16),
-                                      Expanded(
-                                        child: TextFormField(
-                                          controller: lastNameController,
-                                          enabled: !state.isLoading,
-                                          decoration: const InputDecoration(
-                                            labelText: 'Фамилия',
-                                            prefixIcon: Icon(
-                                              Icons.badge_outlined,
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            child: TextFormField(
+                                              controller: lastNameController,
+                                              enabled: !state.isLoading,
+                                              decoration: InputDecoration(
+                                                labelText:
+                                                    strings['lastNameLabel'],
+                                                prefixIcon: const Icon(
+                                                  Icons.person_2,
+                                                ),
+                                              ),
+                                              validator: (value) {
+                                                final v = value?.trim() ?? '';
+                                                if (v.isEmpty) {
+                                                  return 'Фамилия обязательна';
+                                                }
+                                                if (v.length < 2) {
+                                                  return 'Слишком коротая фамилия';
+                                                }
+                                                if (RegExp(
+                                                  r'[0-9]',
+                                                ).hasMatch(v)) {
+                                                  return 'Фамилия не должна содержать цифр';
+                                                }
+                                                return null;
+                                              },
+                                              onChanged:
+                                                  (v) => context
+                                                      .read<
+                                                        DocumentUploadCubit
+                                                      >()
+                                                      .setLastName(v),
                                             ),
-                                            hintText: 'Введите фамилию',
                                           ),
-                                          validator: (value) {
-                                            final v = value?.trim() ?? '';
-                                            if (v.isEmpty) {
-                                              return 'Фамилия обязательна';
-                                            }
-                                            if (v.length < 2) {
-                                              return 'Фамилия слишком короткая';
-                                            }
-                                            if (RegExp(r'[0-9]').hasMatch(v)) {
-                                              return 'Фамилия не должна содержать цифр';
-                                            }
-                                            return null;
-                                          },
-                                          onChanged: (value) {
-                                            context
-                                                .read<DocumentUploadCubit>()
-                                                .setLastName(value);
-                                            setState(() {});
-                                          },
-                                        ),
+                                        ],
                                       ),
+                                      const SizedBox(height: 16),
+                                      Row(
+                                        children: [
+                                          Expanded(
+                                            child: FilledButton.icon(
+                                              onPressed:
+                                                  (state.isLoading ||
+                                                          !_isFormValid())
+                                                      ? null
+                                                      : () => pickFiles(),
+                                              icon:
+                                                  state.isLoading
+                                                      ? const SizedBox(
+                                                        width: 18,
+                                                        height: 18,
+                                                        child:
+                                                            CircularProgressIndicator(
+                                                              strokeWidth: 2,
+                                                              color:
+                                                                  Colors.white,
+                                                            ),
+                                                      )
+                                                      : const Icon(
+                                                        Icons
+                                                            .cloud_upload_outlined,
+                                                      ),
+                                              label: Text(
+                                                state.isLoading
+                                                    ? strings['uploading']!
+                                                    : strings['uploadBtn']!,
+                                              ),
+                                            ),
+                                          ),
+                                          const SizedBox(width: 12),
+                                          OutlinedButton.icon(
+                                            onPressed: () {
+                                              context
+                                                  .read<DocumentUploadCubit>()
+                                                  .reset();
+                                              nameController.clear();
+                                              lastNameController.clear();
+                                            },
+                                            icon: const Icon(Icons.restart_alt),
+                                            label: const Text('Новый'),
+                                          ),
+                                        ],
+                                      ),
+                                      if (state.isLoading) ...[
+                                        const SizedBox(height: 12),
+                                        LinearProgressIndicator(
+                                          borderRadius: BorderRadius.circular(
+                                            6,
+                                          ),
+                                        ),
+                                      ],
                                     ],
                                   ),
                                 ),
-                                const SizedBox(height: 24),
-                                SizedBox(
-                                  width: double.infinity,
-                                  child: Semantics(
-                                    button: true,
-                                    label:
-                                        state.isLoading
-                                            ? 'Обработка файлов'
-                                            : 'Загрузить документы',
-                                    hint: 'Открыть диалог выбора файлов',
-                                    child: FilledButton.icon(
-                                      onPressed:
-                                          (state.isLoading || !_isFormValid())
-                                              ? null
-                                              : () => pickFiles(),
-                                      icon:
-                                          state.isLoading
-                                              ? const SizedBox(
-                                                width: 20,
-                                                height: 20,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                      color: Colors.white,
-                                                    ),
-                                              )
-                                              : const Icon(
-                                                Icons.cloud_upload_outlined,
-                                                size: 24,
-                                              ),
-                                      label: Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 4,
-                                        ),
-                                        child: Text(
-                                          state.isLoading
-                                              ? 'Обработка файлов...'
-                                              : 'Загрузить документы',
-                                          style: TextStyle(
-                                            fontSize: 16,
-                                            color:
-                                                Theme.of(
-                                                  context,
-                                                ).colorScheme.onPrimary,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                                if (state.isLoading)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 16),
-                                    child: LinearProgressIndicator(
-                                      borderRadius: BorderRadius.circular(4),
-                                    ),
-                                  ),
                               ],
                             ),
                           ),
                         ),
-                        const SizedBox(height: 24),
 
-                        // Files Section
-                        if (state.files.isNotEmpty) ...[
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  Checkbox(
-                                    value:
-                                        _selected.isNotEmpty &&
-                                        _selected.length == state.files.length,
-                                    onChanged:
-                                        (_) => _toggleSelectAll(state.files),
+                        const SizedBox(height: 12),
+
+                        // Upload card
+                        MouseRegion(
+                          onEnter: (_) => setState(() => _uploadHover = true),
+                          onExit: (_) => setState(() => _uploadHover = false),
+                          child: AnimatedScale(
+                            scale: _uploadHover ? 1.01 : 1.0,
+                            duration: const Duration(milliseconds: 140),
+                            child: Card(
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(12),
+                                onTap: () => pickFiles(),
+                                child: Container(
+                                  padding: const EdgeInsets.all(18),
+                                  constraints: const BoxConstraints(
+                                    minHeight: 160,
                                   ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'Загруженные документы (${state.files.length})',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .titleLarge
-                                        ?.copyWith(fontWeight: FontWeight.bold),
+                                  child: Column(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.cloud_upload_outlined,
+                                        size: 48,
+                                        color: colorScheme.primary,
+                                      ),
+                                      const SizedBox(height: 12),
+                                      Text(
+                                        'Перетащите или нажмите, чтобы выбрать файлы',
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          color: colorScheme.onSurface
+                                              .withValues(alpha: 0.86),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        'Поддерживаемые форматы: PDF, JPG, PNG',
+                                        style:
+                                            Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                      ),
+                                      const SizedBox(height: 10),
+                                      FilledButton.tonalIcon(
+                                        onPressed:
+                                            (state.isLoading || !_isFormValid())
+                                                ? null
+                                                : () => pickFiles(),
+                                        icon: const Icon(
+                                          Icons.file_upload_outlined,
+                                        ),
+                                        label: const Text('Выбрать файлы'),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
-                              Row(
-                                children: [
-                                  FilledButton.tonalIcon(
-                                    onPressed:
-                                        () =>
-                                            context
-                                                .read<DocumentUploadCubit>()
-                                                .downloadAll(),
-                                    icon: const Icon(Icons.download),
-                                    label: const Text('Скачать всё'),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  FilledButton.tonalIcon(
-                                    onPressed:
-                                        _selected.isNotEmpty
-                                            ? () async {
-                                              final idsToDelete =
-                                                  _selected.toList();
-                                              final filesToDelete =
-                                                  idsToDelete
-                                                      .map(
-                                                        (id) => state.files
-                                                            .firstWhere(
-                                                              (f) =>
-                                                                  f.originalName ==
-                                                                  id,
-                                                            ),
-                                                      )
-                                                      .toList();
-                                              final cubit =
-                                                  context
-                                                      .read<
-                                                        DocumentUploadCubit
-                                                      >();
-                                              final confirmed = await showDialog<
-                                                bool
-                                              >(
-                                                context: context,
-                                                builder:
-                                                    (ctx) => AlertDialog(
-                                                      title: const Text(
-                                                        'Подтвердите удаление',
-                                                      ),
-                                                      content: Text(
-                                                        'Удалить ${idsToDelete.length} выбранных файлов?',
-                                                      ),
-                                                      actions: [
-                                                        TextButton(
-                                                          onPressed:
-                                                              () =>
-                                                                  Navigator.of(
-                                                                    ctx,
-                                                                  ).pop(false),
-                                                          child: const Text(
-                                                            'Отмена',
-                                                          ),
-                                                        ),
-                                                        TextButton(
-                                                          onPressed:
-                                                              () =>
-                                                                  Navigator.of(
-                                                                    ctx,
-                                                                  ).pop(true),
-                                                          child: const Text(
-                                                            'Удалить',
-                                                            style: TextStyle(
-                                                              color: Colors.red,
-                                                            ),
-                                                          ),
-                                                        ),
-                                                      ],
-                                                    ),
-                                              );
-                                              if (confirmed == true) {
-                                                if (!mounted) return;
-                                                for (var file
-                                                    in filesToDelete) {
-                                                  cubit.deleteFile(file);
-                                                }
-                                                setState(
-                                                  () => _selected.clear(),
-                                                );
-                                              }
-                                            }
-                                            : null,
-                                    icon: const Icon(Icons.delete_outline),
-                                    label: const Text('Удалить'),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 16),
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 300),
-                            child: buildGroupedByCategory(
-                              context,
-                              state.files,
-                              _selected,
-                              _toggleSelection,
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          Center(
-                            child: OutlinedButton.icon(
-                              onPressed: () {
-                                context.read<DocumentUploadCubit>().reset();
-                                nameController.clear();
-                                lastNameController.clear();
-                              },
-                              icon: const Icon(Icons.restart_alt),
-                              label: const Text('Новый абитуриент'),
-                              style: OutlinedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 32,
-                                  vertical: 16,
                                 ),
                               ),
                             ),
                           ),
-                        ] else
-                          Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(48),
-                              child: Column(
-                                children: [
-                                  Icon(
-                                    Icons.upload_file_outlined,
-                                    size: 80,
-                                    color: colorScheme.primary.withValues(
-                                      alpha: 0.3,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 16),
-                                  Text(
-                                    'Нет загруженных документов',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleMedium?.copyWith(
-                                      color: colorScheme.onSurface.withValues(
-                                        alpha: 0.6,
+                        ),
+
+                        const SizedBox(height: 20),
+
+                        // Files list / empty state
+                        AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 260),
+                          child:
+                              state.files.isEmpty
+                                  ? Card(
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(28.0),
+                                      child: Column(
+                                        children: [
+                                          Icon(
+                                            Icons.folder_open_outlined,
+                                            size: 56,
+                                            color: colorScheme.primary
+                                                .withValues(alpha: 0.28),
+                                          ),
+                                          const SizedBox(height: 12),
+                                          Text(
+                                            strings['noFiles']!,
+                                            style:
+                                                Theme.of(
+                                                  context,
+                                                ).textTheme.titleMedium,
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Text(
+                                            'Заполните форму и загрузите документы для автоматической классификации.',
+                                            textAlign: TextAlign.center,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall?.copyWith(
+                                              color: colorScheme.onSurface
+                                                  .withValues(alpha: 0.6),
+                                            ),
+                                          ),
+                                        ],
                                       ),
                                     ),
-                                  ),
-                                  const SizedBox(height: 8),
-                                  Text(
-                                    'Заполните форму и загрузите документы для классификации',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.bodyMedium?.copyWith(
-                                      color: colorScheme.onSurface.withValues(
-                                        alpha: 0.5,
+                                  )
+                                  : Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.stretch,
+                                    children: [
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.spaceBetween,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Checkbox(
+                                                value:
+                                                    _selected.isNotEmpty &&
+                                                    _selected.length ==
+                                                        state.files.length,
+                                                onChanged:
+                                                    (_) => _toggleSelectAll(
+                                                      state.files,
+                                                    ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Text(
+                                                'Загруженные документы (${state.files.length})',
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .titleMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                    ),
+                                              ),
+                                            ],
+                                          ),
+                                          Row(
+                                            children: [
+                                              FilledButton.tonalIcon(
+                                                onPressed:
+                                                    () =>
+                                                        context
+                                                            .read<
+                                                              DocumentUploadCubit
+                                                            >()
+                                                            .downloadAll(),
+                                                icon: const Icon(
+                                                  Icons.download,
+                                                ),
+                                                label: const Text(
+                                                  'Скачать всё',
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              FilledButton.tonalIcon(
+                                                onPressed:
+                                                    _selected.isNotEmpty
+                                                        ? () async {
+                                                          final idsToDelete =
+                                                              _selected
+                                                                  .toList();
+                                                          final filesToDelete =
+                                                              idsToDelete
+                                                                  .map(
+                                                                    (
+                                                                      id,
+                                                                    ) => state
+                                                                        .files
+                                                                        .firstWhere(
+                                                                          (f) =>
+                                                                              f.originalName ==
+                                                                              id,
+                                                                        ),
+                                                                  )
+                                                                  .toList();
+                                                          final cubit =
+                                                              context
+                                                                  .read<
+                                                                    DocumentUploadCubit
+                                                                  >();
+                                                          final confirmed = await showDialog<
+                                                            bool
+                                                          >(
+                                                            context: context,
+                                                            builder:
+                                                                (
+                                                                  ctx,
+                                                                ) => AlertDialog(
+                                                                  title: const Text(
+                                                                    'Подтвердите удаление',
+                                                                  ),
+                                                                  content: Text(
+                                                                    'Удалить ${idsToDelete.length} выбранных файлов?',
+                                                                  ),
+                                                                  actions: [
+                                                                    TextButton(
+                                                                      onPressed:
+                                                                          () => Navigator.of(
+                                                                            ctx,
+                                                                          ).pop(
+                                                                            false,
+                                                                          ),
+                                                                      child: const Text(
+                                                                        'Отмена',
+                                                                      ),
+                                                                    ),
+                                                                    TextButton(
+                                                                      onPressed:
+                                                                          () => Navigator.of(
+                                                                            ctx,
+                                                                          ).pop(
+                                                                            true,
+                                                                          ),
+                                                                      child: const Text(
+                                                                        'Удалить',
+                                                                        style: TextStyle(
+                                                                          color:
+                                                                              Colors.red,
+                                                                        ),
+                                                                      ),
+                                                                    ),
+                                                                  ],
+                                                                ),
+                                                          );
+                                                          if (confirmed ==
+                                                              true) {
+                                                            if (!mounted) {
+                                                              return;
+                                                            }
+                                                            for (var file
+                                                                in filesToDelete) {
+                                                              cubit.deleteFile(
+                                                                file,
+                                                              );
+                                                            }
+                                                            setState(
+                                                              () =>
+                                                                  _selected
+                                                                      .clear(),
+                                                            );
+                                                          }
+                                                        }
+                                                        : null,
+                                                icon: const Icon(
+                                                  Icons.delete_outline,
+                                                ),
+                                                label: const Text('Удалить'),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
                                       ),
-                                    ),
-                                    textAlign: TextAlign.center,
+                                      const SizedBox(height: 12),
+                                      AnimatedSwitcher(
+                                        duration: const Duration(
+                                          milliseconds: 300,
+                                        ),
+                                        child: buildGroupedByCategory(
+                                          context,
+                                          state.files,
+                                          _selected,
+                                          _toggleSelection,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 10),
+                                      Center(
+                                        child: OutlinedButton.icon(
+                                          onPressed: () {
+                                            context
+                                                .read<DocumentUploadCubit>()
+                                                .reset();
+                                            nameController.clear();
+                                            lastNameController.clear();
+                                          },
+                                          icon: const Icon(Icons.restart_alt),
+                                          label: const Text('Новый абитуриент'),
+                                        ),
+                                      ),
+                                    ],
                                   ),
-                                ],
-                              ),
-                            ),
-                          ),
+                        ),
+
+                        const SizedBox(height: 28),
                       ],
                     ),
                   ),
-                  // Drag overlay for web
-                  if (_dragOver)
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: Container(
-                          color: Colors.black.withValues(alpha: 0.35),
-                          child: Center(
-                            child: Card(
-                              color: Colors.white.withValues(alpha: 0.9),
-                              elevation: 8,
-                              child: Padding(
-                                padding: const EdgeInsets.all(24.0),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: const [
-                                    Icon(Icons.cloud_upload_outlined, size: 48),
-                                    SizedBox(height: 12),
-                                    Text(
-                                      'Перетащите файлы, чтобы загрузить',
-                                      style: TextStyle(fontSize: 16),
-                                    ),
-                                  ],
+                ),
+              ),
+
+              // Page-level drag overlay
+              if (_dragActive)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: Container(
+                      color: Color.fromRGBO(0, 0, 0, 0.45),
+                      child: Center(
+                        child: Card(
+                          color: Theme.of(context).colorScheme.surface,
+                          elevation: 10,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(14),
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.all(24.0),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.cloud_upload,
+                                  size: 56,
+                                  color: Theme.of(context).colorScheme.primary,
                                 ),
-                              ),
+                                const SizedBox(height: 12),
+                                Text(
+                                  'Перетащите файлы, чтобы загрузить',
+                                  style:
+                                      Theme.of(context).textTheme.titleMedium,
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Отпустите файлы, чтобы начать загрузку',
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                              ],
                             ),
                           ),
                         ),
                       ),
                     ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }
