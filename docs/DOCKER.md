@@ -59,10 +59,10 @@ docker-compose restart
 docker-compose logs -f
 
 # View logs for specific service
-docker-compose logs -f tou-document-parser
+docker-compose logs -f ai-reception
 
 # Access container shell
-docker-compose exec tou-document-parser bash
+docker-compose exec ai-reception bash
 ```
 
 ### Updates
@@ -84,15 +84,15 @@ To use the production-optimized Dockerfile:
 
 ```bash
 # Build with production Dockerfile
-docker build -f Dockerfile.production -t tou-document-parser:prod .
+docker build -f Dockerfile.production -t ai-reception:prod .
 
 # Run the production container
 docker run -d \
-  --name tou-document-parser \
+  --name ai-reception \
   --restart unless-stopped \
   -p 5040:5040 \
   -v $(pwd)/uploads:/app/uploads \
-  tou-document-parser:prod
+  ai-reception:prod
 ```
 
 ### Configure Nginx Reverse Proxy
@@ -140,14 +140,14 @@ sudo systemctl reload nginx
 docker ps --format "table {{.Names}}\t{{.Status}}"
 
 # Inspect health check
-docker inspect --format='{{.State.Health.Status}}' tou-document-parser
+docker inspect --format='{{.State.Health.Status}}' ai-reception
 ```
 
 ### Resource Usage
 
 ```bash
 # View resource usage
-docker stats tou-document-parser
+docker stats ai-reception
 
 # View disk usage
 docker system df
@@ -192,7 +192,7 @@ docker volume prune
 Minimal files needed on the server:
 
 ```
-tou_document_parser/
+ai_reception/
 ├── Dockerfile or Dockerfile.production
 ├── docker-compose.yml
 ├── server.py
@@ -218,10 +218,10 @@ tar -xzf uploads-backup-YYYYMMDD.tar.gz
 
 ```bash
 # Save image
-docker save tou-document-parser > tou-document-parser.tar
+docker save ai-reception > ai-reception.tar
 
 # Load image on another server
-docker load < tou-document-parser.tar
+docker load < ai-reception.tar
 ```
 
 ## ✅ Checklist for Production

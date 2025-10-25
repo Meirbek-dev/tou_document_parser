@@ -13,7 +13,7 @@ if [ -z "$1" ]; then
 fi
 
 SERVER=$1
-REMOTE_DIR="/opt/tou_document_parser"
+REMOTE_DIR="/opt/ai_reception"
 
 echo "=========================================="
 echo "Transfer Files to Server"

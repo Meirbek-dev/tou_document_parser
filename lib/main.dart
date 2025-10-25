@@ -38,11 +38,11 @@ final ValueNotifier<ThemeMode> _themeModeNotifier = ValueNotifier(
 );
 
 void main() {
-  runApp(const TouDocumentApp());
+  runApp(const AIReceptionApp());
 }
 
-class TouDocumentApp extends StatelessWidget {
-  const TouDocumentApp({super.key});
+class AIReceptionApp extends StatelessWidget {
+  const AIReceptionApp({super.key});
 
   ThemeData _baseTheme(ColorScheme scheme) => ThemeData(
     useMaterial3: true,

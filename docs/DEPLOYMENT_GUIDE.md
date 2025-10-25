@@ -261,10 +261,10 @@ docker ps
 docker ps -a
 
 # View logs
-docker-compose logs -f tou-document-parser
+docker-compose logs -f ai-reception
 
 # Access container shell
-docker exec -it tou-document-parser bash
+docker exec -it ai-reception bash
 
 # Stop the application
 docker-compose down

@@ -39,7 +39,7 @@ ssh user@192.168.12.35
 ### 1. Make scripts executable:
 
 ```bash
-cd /opt/tou_document_parser
+cd /opt/ai_reception
 chmod +x deploy.sh test-deployment.sh
 ```
 

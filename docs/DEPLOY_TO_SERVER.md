@@ -157,7 +157,7 @@ After deployment, check:
 
    ```bash
    docker ps
-   # Should show "tou-document-parser"
+   # Should show "ai-reception"
    ```
 
 2. **Application responds:**
@@ -286,7 +286,7 @@ docker-compose up -d
 docker-compose up -d --build
 
 # Shell into container
-docker exec -it tou-document-parser bash
+docker exec -it ai-reception bash
 
 # View container stats
 docker stats

@@ -1,4 +1,4 @@
-name: tou_document_parser
+name: ai_reception
 description: "Flutter Web App to upload and classify documents."
 publish_to: 'none'
 version: 0.1.0
@@ -21,7 +21,7 @@ dev_dependencies:
     sdk: flutter
 
   flutter_lints: ^6.0.0
-  build_runner: ^2.10.0
+  build_runner: ^2.10.1
   freezed: ^3.2.3
 
 flutter:

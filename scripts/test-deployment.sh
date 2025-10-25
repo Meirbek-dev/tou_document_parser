@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Test script for TOU Document Parser deployment
+# Test script for AI Reception deployment
 # This script verifies that the application is working correctly
 
 echo "=========================================="
-echo "TOU Document Parser - Deployment Tests"
+echo "AI Reception - Deployment Tests"
 echo "=========================================="
 
 # Colors
@@ -87,7 +87,7 @@ fi
 
 # Test 8: Check container health
 echo "Test 8: Container health"
-HEALTH=$(docker inspect --format='{{.State.Health.Status}}' tou-document-parser 2>/dev/null)
+HEALTH=$(docker inspect --format='{{.State.Health.Status}}' ai-reception 2>/dev/null)
 if [ "$HEALTH" = "healthy" ] || [ -z "$HEALTH" ]; then
     test_result 0 "Container health OK"
 else

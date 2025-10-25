@@ -1,7 +1,7 @@
 services:
-  tou-document-parser:
+  ai-reception:
     build: .
-    container_name: tou-document-parser
+    container_name: ai-reception
     restart: unless-stopped
     ports:
       - "5040:5040"

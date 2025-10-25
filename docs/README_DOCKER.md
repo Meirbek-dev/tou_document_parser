@@ -47,7 +47,7 @@ ssh your-username@your-server-ip
 ### Step 3: Deploy the Application
 
 ```bash
-cd /opt/tou_document_parser
+cd /opt/ai_reception
 chmod +x deploy.sh test-deployment.sh
 ./deploy.sh
 ```

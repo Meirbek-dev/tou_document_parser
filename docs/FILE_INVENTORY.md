@@ -30,7 +30,7 @@
 ## 📂 Your Project Structure
 
 ```
-tou_document_parser/
+ai_reception/
 ├── 🆕 Dockerfile                    # Basic Docker image
 ├── 🆕 Dockerfile.production         # Production Docker image
 ├── 🆕 docker-compose.yml            # Docker Compose config
@@ -107,7 +107,7 @@ ssh user@server-ip
 
 ```bash
 # Deploy
-cd /opt/tou_document_parser
+cd /opt/ai_reception
 chmod +x deploy.sh test-deployment.sh
 ./deploy.sh
 

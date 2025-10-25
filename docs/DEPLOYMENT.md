@@ -46,15 +46,15 @@ From your local machine, transfer the project files to the server:
 
 ```bash
 # Create directory on server
-ssh user@192.168.12.35 "mkdir -p ~/tou_document_parser"
+ssh user@192.168.12.35 "mkdir -p ~/ai_reception"
 
 # Transfer files using rsync or scp
 rsync -avz --exclude 'node_modules' --exclude '.git' \
-  /path/to/local/tou_document_parser/ \
-  user@192.168.12.35:~/tou_document_parser/
+  /path/to/local/ai_reception/ \
+  user@192.168.12.35:~/ai_reception/
 
 # OR using scp
-scp -r tou_document_parser user@192.168.12.35:~/
+scp -r ai_reception user@192.168.12.35:~/
 ```
 
 ## Step 3: Build and Run Docker Container
@@ -63,7 +63,7 @@ SSH into your server and navigate to the project directory:
 
 ```bash
 ssh user@192.168.12.35
-cd ~/tou_document_parser
+cd ~/ai_reception
 ```
 
 Build and start the Docker container:
@@ -179,7 +179,7 @@ docker-compose logs -f
 docker-compose up -d --build
 
 # Access container shell
-docker-compose exec tou-document-parser bash
+docker-compose exec ai-reception bash
 ```
 
 ### Nginx Management
@@ -211,7 +211,7 @@ sudo netstat -tlnp | grep 5040
 docker ps -a
 
 # View container logs
-docker logs tou-document-parser
+docker logs ai-reception
 
 # Check nginx error logs
 sudo tail -f /var/log/nginx/error.log
@@ -229,7 +229,7 @@ docker-compose down
 git pull
 
 # OR transfer updated files from local machine
-rsync -avz /path/to/local/tou_document_parser/ user@server-ip:~/tou_document_parser/
+rsync -avz /path/to/local/ai_reception/ user@server-ip:~/ai_reception/
 
 # Rebuild and start
 docker-compose up -d --build

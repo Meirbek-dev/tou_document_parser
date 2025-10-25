@@ -11,7 +11,7 @@ On the machine where you normally run `flutter run -d chrome`:
 
 ```bash
 # Open terminal in your project directory
-cd path/to/tou_document_parser
+cd path/to/ai_reception
 
 # Build the web app
 flutter build web --release
@@ -37,13 +37,13 @@ Once you have `build/web/` in `/home/user/ai-reception/`, run:
 cd /home/user/ai-reception
 
 # Transfer to deployment server
-rsync -avz --progress --delete build/web/ user@192.168.12.35:~/tou_document_parser/build/web/
+rsync -avz --progress --delete build/web/ user@192.168.12.35:~/ai_reception/build/web/
 
 # Transfer updated server.py and Dockerfile
-scp server.py Dockerfile user@192.168.12.35:~/tou_document_parser/
+scp server.py Dockerfile user@192.168.12.35:~/ai_reception/
 
 # Restart container
-ssh user@192.168.12.35 "cd ~/tou_document_parser && docker-compose down && docker-compose up -d --build"
+ssh user@192.168.12.35 "cd ~/ai_reception && docker-compose down && docker-compose up -d --build"
 ```
 
 ### Step 4: Test

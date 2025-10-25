@@ -1,11 +1,11 @@
 {
-    "name": "tou_document_parser",
-    "short_name": "tou_document_parser",
+    "name": "ai_reception",
+    "short_name": "ai_reception",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "AI Reception.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

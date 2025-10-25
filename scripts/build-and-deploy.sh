@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and Deploy Script for TOU Document Parser
+# Build and Deploy Script for AI Reception
 # Run this on your DEVELOPMENT machine (where Flutter is installed)
 
 set -e
@@ -60,7 +60,7 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo ""
 
     SERVER="user@192.168.12.35"
-    REMOTE_DIR="~/tou_document_parser"
+    REMOTE_DIR="~/ai_reception"
 
     # Transfer files
     echo "📤 Transferring files..."
@@ -101,6 +101,6 @@ else
     echo "ℹ️  Build complete but not deployed."
     echo ""
     echo "To deploy manually, run:"
-    echo "  rsync -avz build/web/ user@192.168.12.35:~/tou_document_parser/build/web/"
-    echo "  ssh user@192.168.12.35 'cd ~/tou_document_parser && docker-compose restart'"
+    echo "  rsync -avz build/web/ user@192.168.12.35:~/ai_reception/build/web/"
+    echo "  ssh user@192.168.12.35 'cd ~/ai_reception && docker-compose restart'"
 fi

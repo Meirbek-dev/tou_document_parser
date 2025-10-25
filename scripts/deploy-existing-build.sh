@@ -5,7 +5,7 @@
 set -e
 
 SERVER="user@192.168.12.35"
-REMOTE_DIR="~/tou_document_parser"
+REMOTE_DIR="~/ai_reception"
 
 echo "📦 Simple Deployment Script"
 echo "============================="

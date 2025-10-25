@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory=$true)]
     [string]$Server,
 
-    [string]$RemoteDir = "/opt/tou_document_parser"
+    [string]$RemoteDir = "/opt/ai_reception"
 )
 
 Write-Host "==========================================" -ForegroundColor Cyan

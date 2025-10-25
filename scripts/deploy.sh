@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Deployment script for TOU Document Parser
+# Deployment script for AI Reception
 # This script automates the deployment process on your server
 
 set -e  # Exit on error
 
 echo "=========================================="
-echo "TOU Document Parser Deployment Script"
+echo "AI Reception Deployment Script"
 echo "=========================================="
 
 # Configuration
-APP_DIR="/opt/tou_document_parser"
+APP_DIR="/opt/ai_reception"
 DOCKER_COMPOSE_FILE="docker-compose.yml"
 
 # Colors for output

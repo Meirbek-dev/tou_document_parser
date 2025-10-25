@@ -51,7 +51,7 @@ ssh user@your-server-ip
 ### Step 3: Deploy
 
 ```bash
-cd /opt/tou_document_parser
+cd /opt/ai_reception
 chmod +x deploy.sh
 ./deploy.sh
 ```
@@ -154,7 +154,7 @@ Tesseract OCR + PDF Processing
 ## 📁 Directory Structure on Server
 
 ```
-/opt/tou_document_parser/
+/opt/ai_reception/
 ├── Dockerfile
 ├── Dockerfile.production
 ├── docker-compose.yml
@@ -214,7 +214,7 @@ tar -czf uploads-backup-$(date +%Y%m%d).tar.gz uploads/
 ### View Resource Usage
 
 ```bash
-docker stats tou-document-parser
+docker stats ai-reception
 ```
 
 ## 🆘 Troubleshooting
@@ -293,8 +293,8 @@ Your deployment is successful when:
 
 ## 📚 Additional Information
 
-- **Container Name**: `tou-document-parser`
-- **Image Name**: `tou_document_parser-tou-document-parser`
+- **Container Name**: `ai_reception`
+- **Image Name**: `ai_reception-ai_reception`
 - **Network**: `app-network` (bridge)
 - **Restart Policy**: `unless-stopped`
 - **Health Check**: Every 30 seconds

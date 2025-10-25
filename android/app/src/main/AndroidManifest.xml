@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="tou_document_parser"
+        android:label="ai_reception"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
