@@ -35,7 +35,6 @@ String getBackendOrigin() {
 final ValueNotifier<ThemeMode> _themeModeNotifier = ValueNotifier(
   ThemeMode.light,
 );
-final ValueNotifier<bool> _highContrastNotifier = ValueNotifier(false);
 
 void main() {
   runApp(const TouDocumentApp());
@@ -72,42 +71,25 @@ class TouDocumentApp extends StatelessWidget {
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: _themeModeNotifier,
       builder: (context, mode, _) {
-        return ValueListenableBuilder<bool>(
-          valueListenable: _highContrastNotifier,
-          builder: (context, highContrast, _) {
-            final lightScheme =
-                highContrast
-                    ? ColorScheme.fromSeed(
-                      seedColor: Colors.black,
-                      brightness: Brightness.light,
-                    )
-                    : ColorScheme.fromSeed(
-                      seedColor: Colors.indigo,
-                      brightness: Brightness.light,
-                    );
-            final darkScheme =
-                highContrast
-                    ? ColorScheme.fromSeed(
-                      seedColor: Colors.black,
-                      brightness: Brightness.dark,
-                    )
-                    : ColorScheme.fromSeed(
-                      seedColor: Colors.indigo,
-                      brightness: Brightness.dark,
-                    );
+        final lightScheme = ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+          brightness: Brightness.light,
+        );
+        final darkScheme = ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+          brightness: Brightness.dark,
+        );
 
-            return MaterialApp(
-              title: 'AI Reception',
-              theme: _baseTheme(lightScheme),
-              darkTheme: _baseTheme(darkScheme),
-              themeMode: mode,
-              debugShowCheckedModeBanner: false,
-              home: BlocProvider(
-                create: (_) => DocumentUploadCubit(),
-                child: const DocumentUploaderPage(),
-              ),
-            );
-          },
+        return MaterialApp(
+          title: 'AI Reception',
+          theme: _baseTheme(lightScheme),
+          darkTheme: _baseTheme(darkScheme),
+          themeMode: mode,
+          debugShowCheckedModeBanner: false,
+          home: BlocProvider(
+            create: (_) => DocumentUploadCubit(),
+            child: const DocumentUploaderPage(),
+          ),
         );
       },
     );
@@ -129,8 +111,6 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
   // Selection for bulk actions (use originalName as identifier)
   final Set<String> _selected = <String>{};
 
-  // Key to scroll to files header when user taps 'View files' in SnackBar
-  final GlobalKey _filesHeaderKey = GlobalKey();
 
   // Focus nodes for keyboard accessibility
   late final FocusNode _nameFocus;
@@ -175,29 +155,6 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
     final state = cubit.state;
     if (state.isLoading) return;
 
-    if (!_isFormValid()) {
-      // focus the first invalid field
-      if (nameController.text.trim().length < 2) {
-        FocusScope.of(context).requestFocus(FocusNode());
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Row(
-            children: [
-              Icon(Icons.warning_amber_rounded, color: Colors.white),
-              SizedBox(width: 12),
-              Expanded(child: Text("Пожалуйста, заполните имя и фамилию")),
-            ],
-          ),
-          backgroundColor: Colors.orange.shade700,
-          behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(10),
-          ),
-        ),
-      );
-      return;
-    }
 
     final uploadInput = web.HTMLInputElement();
     uploadInput.type = 'file';
@@ -215,62 +172,80 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
         }
 
         if (fileList.isNotEmpty) {
-          final success = await cubit.uploadFiles(fileList);
-          if (!mounted) return;
-          if (success) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: [
-                    const Icon(Icons.check_circle_outline, color: Colors.white),
-                    const SizedBox(width: 12),
-                    Expanded(child: Text(strings['uploadSuccess']!)),
-                  ],
-                ),
-                backgroundColor: Colors.green.shade600,
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                duration: const Duration(seconds: 4),
-                action: SnackBarAction(
-                  label: 'Просмотреть',
-                  textColor: Colors.white,
-                  onPressed: () {
-                    if (_filesHeaderKey.currentContext != null) {
-                      Scrollable.ensureVisible(
-                        _filesHeaderKey.currentContext!,
-                        duration: const Duration(milliseconds: 300),
-                      );
-                    }
-                  },
-                ),
-              ),
-            );
-          } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Row(
-                  children: const [
-                    Icon(Icons.error_outline, color: Colors.white),
-                    SizedBox(width: 12),
-                    Expanded(child: Text('Ошибка при загрузке файлов.')),
-                  ],
-                ),
-                backgroundColor: Colors.red.shade600,
-                behavior: SnackBarBehavior.floating,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                duration: const Duration(seconds: 5),
-                action: SnackBarAction(
-                  label: 'Повторить',
-                  textColor: Colors.white,
-                  onPressed: () => pickFiles(),
-                ),
-              ),
-            );
-          }
+              // Start upload and attach handlers so we can show immediate
+              // feedback from the drop action without making this callback
+              // async. The cubit still manages loading state for the UI.
+              cubit.uploadFiles(fileList).then((success) {
+                if (!mounted) return;
+                if (success) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Row(
+                        children: [
+                          const Icon(Icons.check_circle_outline, color: Colors.white),
+                          const SizedBox(width: 12),
+                          Expanded(child: Text(strings['uploadSuccess']!)),
+                        ],
+                      ),
+                      backgroundColor: Colors.green.shade600,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      duration: const Duration(seconds: 4),
+                    ),
+                  );
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Row(
+                        children: const [
+                          Icon(Icons.error_outline, color: Colors.white),
+                          SizedBox(width: 12),
+                          Expanded(child: Text('Ошибка при загрузке файлов.')),
+                        ],
+                      ),
+                      backgroundColor: Colors.red.shade600,
+                      behavior: SnackBarBehavior.floating,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      duration: const Duration(seconds: 5),
+                      action: SnackBarAction(
+                        label: 'Повторить',
+                        textColor: Colors.white,
+                        onPressed: () => pickFiles(),
+                      ),
+                    ),
+                  );
+                }
+              }).catchError((e, st) {
+                // Unexpected error — show failure and allow retry
+                if (!mounted) return;
+                debugPrint('Drop upload error: $e');
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Row(
+                      children: const [
+                        Icon(Icons.error_outline, color: Colors.white),
+                        SizedBox(width: 12),
+                        Expanded(child: Text('Ошибка при загрузке файлов.')),
+                      ],
+                    ),
+                    backgroundColor: Colors.red.shade600,
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    duration: const Duration(seconds: 5),
+                    action: SnackBarAction(
+                      label: 'Повторить',
+                      textColor: Colors.white,
+                      onPressed: () => pickFiles(),
+                    ),
+                  ),
+                );
+              });
         }
       }
     });
@@ -387,19 +362,6 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
                       ? ThemeMode.light
                       : ThemeMode.dark;
             },
-          ),
-          IconButton(
-            tooltip: 'Высокая контрастность',
-            icon: ValueListenableBuilder<bool>(
-              valueListenable: _highContrastNotifier,
-              builder:
-                  (context, highContrast, _) => Icon(
-                    highContrast ? Icons.high_quality : Icons.highlight_alt,
-                  ),
-            ),
-            onPressed:
-                () =>
-                    _highContrastNotifier.value = !_highContrastNotifier.value,
           ),
         ],
       ),
