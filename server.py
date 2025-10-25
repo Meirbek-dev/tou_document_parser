@@ -1,68 +1,121 @@
+"""
+FastAPI Document Classification Service
+Modern OCR-based document classification with parallel processing
+"""
+
+import asyncio
+import io
 import os
 import sys
+import tempfile
+import zipfile
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from enum import Enum
+from pathlib import Path
+from typing import Annotated
 
 # Set paths before importing pytesseract
-# Check if running in Docker or Windows
 if sys.platform == "win32":
     os.environ["TESSDATA_PREFIX"] = r"C:\tools\tesseract\tessdata"
-else:
-    # Linux/Docker environment
-    os.environ["TESSDATA_PREFIX"] = os.getenv("TESSDATA_PREFIX", "/usr/share/tesseract-ocr/5/tessdata/")
+    import pytesseract
 
-import pytesseract
-from PIL import Image
-from pdf2image import convert_from_bytes
-from flask import Flask, request, jsonify, send_file, send_from_directory
-from werkzeug.utils import secure_filename
-from flask_cors import CORS
-import io
-import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
-import logging
-import tempfile
-
-# Set tesseract command path based on platform
-if sys.platform == "win32":
     pytesseract.pytesseract.tesseract_cmd = r"C:\tools\tesseract\tesseract.exe"
 else:
-    # In Docker/Linux, tesseract is in PATH
-    pytesseract.pytesseract.tesseract_cmd = "tesseract"
-app = Flask(__name__)
-CORS(app)
-UPLOAD_FOLDER = "uploads"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    os.environ["TESSDATA_PREFIX"] = os.getenv(
+        "TESSDATA_PREFIX", "/usr/share/tesseract-ocr/5/tessdata/"
+    )
+    import pytesseract
 
-# Basic logging for production visibility
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    pytesseract.pytesseract.tesseract_cmd = "tesseract"
+
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
+
+import aiofiles
+import pytesseract
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pdf2image import convert_from_bytes
+from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field, validator
+from pydantic_settings import BaseSettings
+
+
+# Configuration
+class Settings(BaseSettings):
+    """Application settings with environment variable support"""
+
+    max_file_size: int = Field(
+        default=50 * 1024 * 1024, description="Max file size in bytes"
+    )
+    max_request_size: int = Field(
+        default=500 * 1024 * 1024, description="Max request size in bytes"
+    )
+    max_workers: int = Field(
+        default=min(4, os.cpu_count() or 1), description="Thread pool workers"
+    )
+    upload_folder: Path = Field(default=Path("uploads"), description="Upload directory")
+    web_build_folder: Path = Field(
+        default=Path("build/web"), description="Flutter web build directory"
+    )
+    max_pages_ocr: int = Field(default=10, description="Max PDF pages to OCR")
+    image_max_size: int = Field(default=2000, description="Max image dimension for OCR")
+    log_level: str = Field(default="INFO", description="Logging level")
+
+    model_config = ConfigDict(env_prefix="APP_", case_sensitive=False)
+
+
+settings = Settings()
+
+# Setup logging
+logging.basicConfig(
+    level=getattr(logging, settings.log_level),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-# Configuration: limits and settings (can be overridden with env vars)
-MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 100 * 1024 * 1024))  # 50 MB per file
-MAX_REQUEST_SIZE = int(os.getenv("MAX_REQUEST_SIZE", 500 * 1024 * 1024))  # 500 MB total
 
-# Thread pool for parallel processing
-MAX_WORKERS = min(4, os.cpu_count() or 1)
-executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+# Document categories and keywords
+class DocumentCategory(str, Enum):
+    UDOSTOVERENIE = "Udostoverenie"
+    ENT = "ENT"
+    LGOTA = "Lgota"
+    DIPLOM = "Diplom"
+    PRIVIVKA = "Privivka"
+    MED_SPRAVKA = "MedSpravka"
+    UNCLASSIFIED = "Unclassified"
 
-CATEGORIES = {
-    "Udostoverenie": ["удостоверение", "ID"],
-    "ENT": [
+
+CATEGORY_KEYWORDS = {
+    DocumentCategory.UDOSTOVERENIE: ["удостоверение", "ID"],
+    DocumentCategory.ENT: [
         "сертификат",
         "ТЕСТИРОВАНИЯ",
         "ТЕСТІЛЕУ",
         "ТЕСТИРУЕМОГО",
         "Набранные баллы",
     ],
-    "Lgota": ["льгота", "инвалид", "многодетная"],
-    "Diplom": ["диплом", "аттестат", "бакалавр", "магистр"],
-    "Privivka": [
+    DocumentCategory.LGOTA: ["льгота", "инвалид", "многодетная"],
+    DocumentCategory.DIPLOM: ["диплом", "аттестат", "бакалавр", "магистр"],
+    DocumentCategory.PRIVIVKA: [
         "прививка",
         "прививочный паспорт",
         "вакцинирование",
         "инфекция",
     ],
-    "MedSpravka": [
+    DocumentCategory.MED_SPRAVKA: [
         "медицинская справка",
         "справка",
         "медицинский",
@@ -85,279 +138,427 @@ CATEGORIES = {
     ],
 }
 
-ALLOWED_EXTENSIONS = {"pdf", "jpg", "jpeg", "png"}
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+ALLOWED_MIMETYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/jpg",
+    "image/png",
+    "image/pjpeg",
+}
 
 
-def allowed_file(filename):
-    if not filename:
-        return False
-    ext = os.path.splitext(filename)[1].lower()
-    return ext in {".pdf", ".jpg", ".jpeg", ".png"}
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator:
+    """Manage application lifecycle"""
+
+    # Startup
+    settings.upload_folder.mkdir(exist_ok=True)
+    app.state.executor = ThreadPoolExecutor(max_workers=settings.max_workers)
+    logger.info("Started ThreadPoolExecutor with %d workers", settings.max_workers)
+
+    yield
+
+    # Shutdown
+    executor = getattr(app.state, "executor", None)
+    if executor:
+        executor.shutdown(wait=True)
+        logger.info("Shut down ThreadPoolExecutor")
 
 
-def optimize_image(img, max_size=2000):
+# FastAPI application
+app = FastAPI(
+    title="AI Reception",
+    description="OCR-based document classification with parallel processing",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# Pydantic models
+class ProcessedFile(BaseModel):
+    """Response model for processed file"""
+
+    original_name: str
+    # Return stable string keys so frontend can rely on exact values
+    category: str
+    new_name: str | None = None
+
+
+class FileDeleteResponse(BaseModel):
+    """Response model for file deletion"""
+
+    status: str
+    filename: str
+
+
+class HealthCheck(BaseModel):
+    """Health check response"""
+
+    status: str
+    version: str
+
+
+# Utility functions
+def validate_file_extension(filename: str) -> bool:
+    """Validate file extension"""
+    return Path(filename).suffix.lower() in ALLOWED_EXTENSIONS
+
+
+def validate_mimetype(content_type: str) -> bool:
+    """Validate MIME type"""
+    return content_type in ALLOWED_MIMETYPES
+
+
+def sanitize_name(name: str) -> str:
+    """Sanitize name for filesystem usage"""
+    if not name:
+        return "anon"
+    safe = "".join(c for c in name if c.isalnum() or c in ("_", "-"))
+    return safe or "anon"
+
+
+def optimize_image(img: Image.Image, max_size: int | None = None) -> Image.Image:
     """Resize image to improve OCR speed while maintaining quality"""
+    max_size = max_size or settings.image_max_size
     if max(img.size) > max_size:
         img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     return img
 
 
-def extract_text(file_bytes, ext, max_pages=10):
+def extract_text(file_bytes: bytes, ext: str) -> str:
     """
-    Extract text with optimizations:
+    Extract text from document using OCR
+    Optimizations:
     - Only process first few pages of PDFs
     - Resize images for faster OCR
     - Use faster OCR config
     """
-    ocr_config = '--psm 3 --oem 1'  # Faster OCR mode
+    ocr_config = "--psm 3 --oem 1"  # Faster OCR mode
 
     if ext == ".pdf":
-        # Only convert first few pages for classification
-        images = convert_from_bytes(file_bytes, first_page=1, last_page=max_pages)
+        images = convert_from_bytes(
+            file_bytes, first_page=1, last_page=settings.max_pages_ocr
+        )
         texts = []
-        for img in images:
-            img = optimize_image(img)
-            text = pytesseract.image_to_string(img, lang="rus", config=ocr_config)
+        for image in images:
+            optimized = optimize_image(image)
+            text = pytesseract.image_to_string(optimized, lang="rus", config=ocr_config)
             texts.append(text)
+
             # Early exit if we have enough text for classification
             combined = "\n".join(texts)
-            if len(combined) > 500:  # Enough text to classify
+            if len(combined) > 500:
                 break
         return "\n".join(texts)
-    else:
-        img = Image.open(io.BytesIO(file_bytes))
-        img = optimize_image(img)
-        return pytesseract.image_to_string(img, lang="rus", config=ocr_config)
+    img = Image.open(io.BytesIO(file_bytes))
+    img = optimize_image(img)
+    return pytesseract.image_to_string(img, lang="rus", config=ocr_config)
 
 
-@lru_cache(maxsize=128)
-def classify(text):
-    """Classify text with caching to avoid reprocessing"""
+@lru_cache(maxsize=256)
+def classify_text(text: str) -> DocumentCategory:
+    """Classify text based on keywords with caching"""
     text_lower = text.lower()
-    best_match = "Unclassified"
+    best_match = DocumentCategory.UNCLASSIFIED
     max_hits = 0
 
-    for category, keywords in CATEGORIES.items():
+    for category, keywords in CATEGORY_KEYWORDS.items():
         hits = sum(1 for keyword in keywords if keyword.lower() in text_lower)
-        if hits > 0:
-            print(
-                f"Category: {category}, Hits: {hits}, Matched Keywords: {[keyword for keyword in keywords if keyword.lower() in text_lower]}"
-            )
         if hits > max_hits:
             max_hits = hits
             best_match = category
+            logger.debug(
+                "Category: %s, Hits: %d, Keywords: %s",
+                category,
+                hits,
+                [k for k in keywords if k.lower() in text_lower],
+            )
 
     return best_match
 
 
-def process_single_file(file_data, name, lastname):
-    """Process a single file - designed to run in parallel.
+def generate_unique_filename(
+    name: str, lastname: str, category: DocumentCategory, ext: str
+) -> str:
+    """Generate unique filename with incrementing counter"""
+    base_name = f"{sanitize_name(name)}_{sanitize_name(lastname)}_{category.value}"
 
-    Expects file_data as (original_name, temp_path). Reads the temp file
-    contents in a controlled way, classifies and optionally stores the file.
-    Always attempts to remove the temporary file.
-    """
-    raw_name, tmp_path = file_data
-    ext = os.path.splitext(raw_name)[1].lower()
-
-    if not allowed_file(raw_name):
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-        return None
-
-    filename = secure_filename(raw_name)
-
-    try:
-        with open(tmp_path, "rb") as fh:
-            file_bytes = fh.read()
-
-        # Extract text and classify
-        text = extract_text(file_bytes, ext)
-        logger.info("Extracted %d chars from %s", len(text), filename)
-        category = classify(text)
-
-        new_name = None
-        if category != "Unclassified":
-            # sanitize name/lastname for filesystem usage
-            def safe_part(s: str) -> str:
-                if not s:
-                    return "anon"
-                safe = "".join(c for c in s if c.isalnum() or c in ('_', '-'))
-                return safe or "anon"
-
-            base_name = f"{safe_part(name)}_{safe_part(lastname)}_{category}"
-
-            # Generate unique filename
-            index = 1
-            while True:
-                candidate = f"{base_name}{index}{ext}"
-                path = os.path.join(UPLOAD_FOLDER, candidate)
-                if not os.path.exists(path):
-                    new_name = candidate
-                    break
-                index += 1
-
-            with open(path, "wb") as f:
-                f.write(file_bytes)
-
-        return {"original_name": filename, "category": category, "new_name": new_name}
-    finally:
-        try:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-        except Exception:
-            pass
+    index = 1
+    while True:
+        candidate = f"{base_name}{index}{ext}"
+        path = settings.upload_folder / candidate
+        if not path.exists():
+            return candidate
+        index += 1
 
 
-@app.route("/upload", methods=["POST"])
-def upload():
-    name = request.form.get("name", "").strip()
-    lastname = request.form.get("lastname", "").strip()
-
-    if not name or not lastname:
-        return jsonify({"error": "Name and Lastname required"}), 400
-
-    # Basic request size guard
-    content_length = request.content_length
-    if content_length and content_length > MAX_REQUEST_SIZE:
-        return jsonify({"error": "Request too large"}), 413
-
-    files = request.files.getlist("files")
-    if not files:
-        return jsonify({"error": "No files provided"}), 400
-
-    # Save each uploaded file to a temporary file on disk and validate size
-    file_data_list = []  # tuples of (original_name, temp_path)
-    try:
-        for file_storage in files:
-            if not file_storage or not file_storage.filename:
-                continue
-
-            original_name = file_storage.filename
-
-            if not allowed_file(original_name):
-                logger.warning("Rejected disallowed file type: %s", original_name)
-                continue
-
-            # Check MIME type if provided
-            content_type = file_storage.mimetype
-            if content_type:
-                if not (content_type.startswith("image/") or content_type == "application/pdf"):
-                    logger.warning("Rejected unexpected content-type %s for %s", content_type, original_name)
-                    continue
-
-            # Stream to temporary file and enforce per-file size
-            tmp_fd, tmp_path = tempfile.mkstemp(prefix="upload_", suffix=os.path.splitext(original_name)[1])
-            os.close(tmp_fd)
-            total = 0
-            try:
-                with open(tmp_path, "wb") as out_f:
-                    chunk = file_storage.stream.read(8192)
-                    while chunk:
-                        total += len(chunk)
-                        if total > MAX_FILE_SIZE:
-                            raise ValueError("File too large")
-                        out_f.write(chunk)
-                        chunk = file_storage.stream.read(8192)
-            except Exception as e:
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-                logger.exception("Error saving uploaded file %s: %s", original_name, e)
-                return jsonify({"error": "Failed to save uploaded file"}), 400
-
-            file_data_list.append((original_name, tmp_path))
-
-        if not file_data_list:
-            return jsonify({"error": "No valid files uploaded"}), 400
-
-        logger.info("Processing %d files in parallel with %d workers", len(file_data_list), MAX_WORKERS)
-
-        # Process files in parallel
-        results = []
-        futures = [executor.submit(process_single_file, file_data, name, lastname) for file_data in file_data_list]
-
-        # Collect results as they complete
-        for future in as_completed(futures):
-            try:
-                res = future.result()
-                if res:
-                    results.append(res)
-            except Exception as e:
-                logger.exception("Error processing file: %s", e)
-
-        logger.info("Completed processing %d files", len(results))
-        return jsonify(results)
-    finally:
-        # Cleanup any temporary files that might remain (defensive)
-        for _, tmp_path in file_data_list:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-
-
-@app.route("/files/<filename>")
-def download_file(filename):
-    return send_from_directory(UPLOAD_FOLDER, filename, as_attachment=True)
-
-
-@app.route("/download_zip")
-def download_zip():
-    name = request.args.get("name", "").strip()
-    lastname = request.args.get("lastname", "").strip()
-    prefix = f"{name}_{lastname}_"
-
-    zip_stream = io.BytesIO()
-    with zipfile.ZipFile(zip_stream, "w", zipfile.ZIP_DEFLATED) as archive:
-        for fname in os.listdir(UPLOAD_FOLDER):
-            if fname.startswith(prefix):
-                path = os.path.join(UPLOAD_FOLDER, fname)
-                archive.write(path, arcname=fname)
-
-    zip_stream.seek(0)
-    return send_file(
-        zip_stream,
-        mimetype="application/zip",
-        as_attachment=True,
-        download_name="documents.zip",
+def _raise_file_too_large(filename: str) -> None:
+    """Helper that raises a 413 HTTPException for an oversized file."""
+    raise HTTPException(
+        status_code=413,
+        detail=f"File {filename} exceeds size limit",
     )
 
 
-@app.route("/delete_file", methods=["DELETE"])
-def delete_file():
-    filename = request.args.get("filename", "")
-    path = os.path.join(UPLOAD_FOLDER, filename)
-    if os.path.exists(path):
-        os.remove(path)
-        return jsonify({"status": "deleted"})
-    return jsonify({"error": "File not found"}), 404
+async def process_single_file(
+    file_data: tuple[str, Path], name: str, lastname: str, executor: ThreadPoolExecutor
+) -> ProcessedFile | None:
+    """
+    Process a single file - runs OCR in thread pool
+
+    Args:
+        file_data: Tuple of (original_name, temp_path)
+        name: User's first name
+        lastname: User's last name
+
+    Returns:
+        ProcessedFile or None if processing failed
+    """
+    original_name, tmp_path = file_data
+    ext = Path(original_name).suffix.lower()
+
+    if not validate_file_extension(original_name):
+        tmp_path.unlink(missing_ok=True)
+        return None
+
+    try:
+        # Read file bytes asynchronously to avoid blocking
+        async with aiofiles.open(tmp_path, "rb") as afp:
+            file_bytes = await afp.read()
+
+        # Run CPU-bound OCR in thread pool
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(executor, extract_text, file_bytes, ext)
+
+        # Classify document
+        category = classify_text(text)
+
+        new_name = None
+        if category != DocumentCategory.UNCLASSIFIED:
+            new_name = generate_unique_filename(name, lastname, category, ext)
+            dest_path = settings.upload_folder / new_name
+            # write asynchronously
+            async with aiofiles.open(dest_path, "wb") as dfp:
+                await dfp.write(file_bytes)
+
+        return ProcessedFile(
+            original_name=original_name, category=category.value, new_name=new_name
+        )
+    except Exception:
+        logger.exception("Error processing file %s", original_name)
+        return None
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
-# Serve Flutter web app
-@app.route("/")
-def index():
-    return send_from_directory("build/web", "index.html")
+async def _save_upload_to_tmp(upload_file: UploadFile) -> tuple[str, Path] | None:
+    """Validate and save an UploadFile to a temporary path asynchronously.
+
+    Returns (original_filename, tmp_path) or None if rejected.
+    """
+    if not upload_file.filename:
+        return None
+
+    if not validate_file_extension(upload_file.filename):
+        logger.warning("Rejected disallowed file type: %s", upload_file.filename)
+        return None
+
+    if upload_file.content_type and not validate_mimetype(upload_file.content_type):
+        logger.warning(
+            "Rejected unexpected content-type %s for %s",
+            upload_file.content_type,
+            upload_file.filename,
+        )
+        return None
+
+    tmp_fd, tmp_path_str = tempfile.mkstemp(
+        prefix="upload_", suffix=Path(upload_file.filename).suffix
+    )
+    os.close(tmp_fd)
+    tmp_path = Path(tmp_path_str)
+
+    try:
+        total_size = 0
+        async with aiofiles.open(tmp_path, "wb") as afp:
+            while chunk := await upload_file.read(8192):
+                total_size += len(chunk)
+                if total_size > settings.max_file_size:
+                    tmp_path.unlink(missing_ok=True)
+                    _raise_file_too_large(upload_file.filename)
+                await afp.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        tmp_path.unlink(missing_ok=True)
+        logger.exception("Error saving %s", upload_file.filename)
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to save uploaded file",
+        ) from e
+    else:
+        return (upload_file.filename, tmp_path)
 
 
-@app.route("/<path:path>")
-def serve_static(path):
-    # Serve files from build/web (compiled Flutter web app)
-    build_web_path = os.path.join("build/web", path)
-    if os.path.exists(build_web_path):
-        return send_from_directory("build/web", path)
+# API endpoints
+@app.get("/health", response_model=HealthCheck)
+async def health_check() -> HealthCheck:
+    """Health check endpoint"""
+    return HealthCheck(status="healthy", version="2.0.0")
 
-    # If not found, serve index.html for client-side routing (SPA behavior)
-    return send_from_directory("build/web", "index.html")
+
+@app.post("/upload", response_model=list[ProcessedFile])
+async def upload_files(
+    request: Request,
+    name: Annotated[str, Form(min_length=1, max_length=100)],
+    lastname: Annotated[str, Form(min_length=1, max_length=100)],
+    files: Annotated[list[UploadFile], File()],
+) -> list[ProcessedFile]:
+    """
+    Upload and classify documents
+
+    - **name**: User's first name
+    - **lastname**: User's last name
+    - **files**: List of documents (PDF, JPG, PNG)
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # Validate and save files to temporary locations
+    file_data_list = await _gather_file_data(files)
+
+    if not file_data_list:
+        raise HTTPException(status_code=400, detail="No valid files uploaded")
+
+    try:
+        executor = request.app.state.executor
+        processed_files = await _process_files(file_data_list, name, lastname, executor)
+
+        logger.info("Successfully processed %d files", len(processed_files))
+        return processed_files
+    finally:
+        # Cleanup temporary files
+        for _, tmp_path in file_data_list:
+            tmp_path.unlink(missing_ok=True)
+
+
+async def _process_files(
+    file_data_list: list[tuple[str, Path]],
+    name: str,
+    lastname: str,
+    executor: ThreadPoolExecutor,
+) -> list[ProcessedFile]:
+    """Run processing tasks concurrently and return successful results."""
+    tasks = [
+        process_single_file(file_data, name, lastname, executor)
+        for file_data in file_data_list
+    ]
+    results = await asyncio.gather(*tasks)
+    return [r for r in results if r is not None]
+
+
+async def _gather_file_data(files: list[UploadFile]) -> list[tuple[str, Path]]:
+    """Validate and save all uploaded files, returning list of (name, tmp_path)."""
+    results: list[tuple[str, Path]] = []
+    for upload_file in files:
+        if not upload_file.filename:
+            continue
+
+        saved = await _save_upload_to_tmp(upload_file)
+        if saved:
+            results.append(saved)
+    return results
+
+
+@app.get("/files/{filename}")
+async def download_file(filename: str) -> FileResponse:
+    """Download a specific file"""
+    file_path = settings.upload_folder / filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    # Security: Prevent directory traversal
+    if not file_path.resolve().parent == settings.upload_folder.resolve():
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return FileResponse(
+        path=file_path, filename=filename, media_type="application/octet-stream"
+    )
+
+
+@app.get("/download_zip")
+async def download_zip(
+    name: Annotated[str, Query(min_length=1)],
+    lastname: Annotated[str, Query(min_length=1)],
+) -> StreamingResponse:
+    """Download all files for a user as ZIP"""
+    prefix = f"{sanitize_name(name)}_{sanitize_name(lastname)}_"
+
+    # Create ZIP in memory
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for file_path in settings.upload_folder.glob(f"{prefix}*"):
+            if file_path.is_file():
+                archive.write(file_path, arcname=file_path.name)
+
+    zip_buffer.seek(0)
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=documents.zip"},
+    )
+
+
+@app.delete("/delete_file", response_model=FileDeleteResponse)
+async def delete_file(filename: Annotated[str, Query()]) -> FileDeleteResponse:
+    """Delete a specific file"""
+    file_path = settings.upload_folder / filename
+
+    # Security: Prevent directory traversal
+    if not file_path.resolve().parent == settings.upload_folder.resolve():
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    try:
+        file_path.unlink()
+        return FileDeleteResponse(status="deleted", filename=filename)
+    except Exception as e:
+        logger.exception("Error deleting file %s", filename)
+        raise HTTPException(status_code=500, detail="Failed to delete file") from e
+
+
+# Serve Flutter web app (if exists)
+if settings.web_build_folder.exists():
+    app.mount(
+        "/", StaticFiles(directory=settings.web_build_folder, html=True), name="static"
+    )
 
 
 if __name__ == "__main__":
-    # Get port from environment variable or default to 5040
-    port = int(os.getenv("PORT", 5040))
-    # Disable debug in production
-    debug = os.getenv("FLASK_ENV", "production") != "production"
-    app.run(host="0.0.0.0", port=port, debug=debug)
+    import uvicorn
+
+    port = int(os.getenv("PORT", "5040"))
+
+    # Bind to 0.0.0.0 in development to be reachable from other processes/containers
+    host = os.getenv("HOST", "0.0.0.0")  # noqa: S104
+
+    uvicorn.run(
+        "server:app",
+        host=host,
+        port=port,
+        reload=os.getenv("ENVIRONMENT", "production") != "production",
+        log_level=settings.log_level.lower(),
+    )
