@@ -260,32 +260,48 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
                             const SizedBox(height: 24),
                             SizedBox(
                               width: double.infinity,
-                              child: FilledButton.icon(
-                                onPressed:
-                                    state.isLoading ? null : () => pickFiles(),
-                                icon:
+                              child: Semantics(
+                                button: true,
+                                label:
                                     state.isLoading
-                                        ? const SizedBox(
-                                          width: 20,
-                                          height: 20,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.white,
-                                          ),
-                                        )
-                                        : const Icon(
-                                          Icons.cloud_upload_outlined,
-                                          size: 24,
-                                        ),
-                                label: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    vertical: 4,
-                                  ),
-                                  child: Text(
-                                    state.isLoading
-                                        ? 'Обработка файлов...'
+                                        ? 'Обработка файлов'
                                         : 'Загрузить документы',
-                                    style: const TextStyle(fontSize: 16),
+                                hint: 'Открыть диалог выбора файлов',
+                                child: FilledButton.icon(
+                                  onPressed:
+                                      state.isLoading
+                                          ? null
+                                          : () => pickFiles(),
+                                  icon:
+                                      state.isLoading
+                                          ? const SizedBox(
+                                            width: 20,
+                                            height: 20,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                              color: Colors.white,
+                                            ),
+                                          )
+                                          : const Icon(
+                                            Icons.cloud_upload_outlined,
+                                            size: 24,
+                                          ),
+                                  label: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 4,
+                                    ),
+                                    child: Text(
+                                      state.isLoading
+                                          ? 'Обработка файлов...'
+                                          : 'Загрузить документы',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        color:
+                                            Theme.of(
+                                              context,
+                                            ).colorScheme.onPrimary,
+                                      ),
+                                    ),
                                   ),
                                 ),
                               ),
@@ -313,14 +329,18 @@ class _DocumentUploaderPageState extends State<DocumentUploaderPage> {
                             style: Theme.of(context).textTheme.titleLarge
                                 ?.copyWith(fontWeight: FontWeight.bold),
                           ),
-                          FilledButton.tonalIcon(
-                            onPressed:
-                                () =>
-                                    context
-                                        .read<DocumentUploadCubit>()
-                                        .downloadAll(),
-                            icon: const Icon(Icons.download),
-                            label: const Text('Скачать всё'),
+                          Semantics(
+                            button: true,
+                            label: 'Скачать все документы',
+                            child: FilledButton.tonalIcon(
+                              onPressed:
+                                  () =>
+                                      context
+                                          .read<DocumentUploadCubit>()
+                                          .downloadAll(),
+                              icon: const Icon(Icons.download),
+                              label: const Text('Скачать всё'),
+                            ),
                           ),
                         ],
                       ),
@@ -438,148 +458,191 @@ Widget buildGroupedByCategory(BuildContext context, List<UploadedFile> files) {
 
   final colorScheme = Theme.of(context).colorScheme;
 
+  if (grouped.isEmpty) {
+    return Padding(
+      padding: const EdgeInsets.all(24.0),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.folder_open,
+            size: 56,
+            color: colorScheme.onSurface.withValues(alpha: 0.3),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Нет документов',
+            style: TextStyle(
+              fontSize: 18,
+              color: colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Загрузите документы, и мы автоматически их классифицируем и сгруппируем по категориям.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: colorScheme.onSurface.withValues(alpha: 0.5),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   return Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children:
         grouped.entries.map((entry) {
+          final catKey = entry.key;
+          final items = entry.value;
           final info =
-              categoryInfo[entry.key] ??
+              categoryInfo[catKey] ??
               CategoryInfo(
-                name: entry.key,
+                name: catKey,
                 icon: Icons.description,
                 color: Colors.grey,
               );
 
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: info.color.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Icon(info.icon, color: info.color, size: 24),
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      info.name,
-                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        color: info.color,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: info.color.withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '${entry.value.length}',
-                        style: TextStyle(
-                          color: info.color,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
+          return Card(
+            margin: const EdgeInsets.symmetric(vertical: 8.0),
+            elevation: 2,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12.0,
+                vertical: 10.0,
               ),
-              const SizedBox(height: 8),
-              ...entry.value.map((file) {
-                return Card(
-                  elevation: 2,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    side: BorderSide(
-                      color: info.color.withValues(alpha: 0.3),
-                      width: 1,
-                    ),
-                  ),
-                  child: ListTile(
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
-                    leading: Container(
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: info.color.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      CircleAvatar(
+                        backgroundColor: info.color.withValues(alpha: 0.12),
+                        child: Icon(info.icon, color: info.color),
                       ),
-                      child: Icon(
-                        _getFileIcon(file.originalName),
-                        color: info.color,
-                      ),
-                    ),
-                    title: Text(
-                      file.originalName,
-                      style: const TextStyle(fontWeight: FontWeight.w500),
-                    ),
-                    subtitle:
-                        file.newName != null
-                            ? Padding(
-                              padding: const EdgeInsets.only(top: 4),
-                              child: Text(
-                                file.newName!,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: colorScheme.onSurface.withValues(
-                                    alpha: 0.6,
-                                  ),
-                                ),
-                              ),
-                            )
-                            : null,
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton.filledTonal(
-                          onPressed:
-                              () => context
-                                  .read<DocumentUploadCubit>()
-                                  .downloadFile(file),
-                          icon: const Icon(Icons.download),
-                          tooltip: 'Скачать',
-                        ),
-                        const SizedBox(width: 8),
-                        IconButton.outlined(
-                          onPressed:
-                              () => context
-                                  .read<DocumentUploadCubit>()
-                                  .deleteFile(file),
-                          icon: const Icon(Icons.delete_outline),
-                          style: IconButton.styleFrom(
-                            foregroundColor: Colors.red,
-                            side: BorderSide(
-                              color: Colors.red.withValues(alpha: 0.5),
-                            ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          '${info.name} (${items.length})',
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
                           ),
-                          tooltip: 'Удалить',
                         ),
-                      ],
-                    ),
+                      ),
+                      IconButton(
+                        tooltip: 'Скачать все (${items.length})',
+                        icon: const Icon(Icons.download_rounded),
+                        onPressed:
+                            items.any((f) => f.newName != null)
+                                ? () {
+                                  for (var f in items) {
+                                    if (f.newName != null) {
+                                      context
+                                          .read<DocumentUploadCubit>()
+                                          .downloadFile(f);
+                                    }
+                                  }
+                                }
+                                : null,
+                      ),
+                    ],
                   ),
-                );
-              }),
-              const SizedBox(height: 24),
-            ],
+                  const SizedBox(height: 8),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  // Files list
+                  ...items.map((f) {
+                    return ListTile(
+                      dense: true,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 0),
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: info.color.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Icon(
+                          _getFileIcon(f.originalName),
+                          color: info.color,
+                        ),
+                      ),
+                      title: Text(
+                        f.originalName,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle:
+                          f.newName != null
+                              ? Text('Сохранено как ${f.newName!}')
+                              : null,
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: 'Скачать',
+                            icon: const Icon(Icons.download_outlined),
+                            onPressed:
+                                () => context
+                                    .read<DocumentUploadCubit>()
+                                    .downloadFile(f),
+                          ),
+                          IconButton(
+                            tooltip: 'Удалить',
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: () {
+                              showDialog(
+                                context: context,
+                                builder:
+                                    (ctx) => AlertDialog(
+                                      title: const Text('Подтвердите удаление'),
+                                      content: Text(
+                                        'Удалить "${f.originalName}"?',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed:
+                                              () => Navigator.of(ctx).pop(),
+                                          child: const Text('Отмена'),
+                                        ),
+                                        TextButton(
+                                          onPressed: () {
+                                            Navigator.of(ctx).pop();
+                                            context
+                                                .read<DocumentUploadCubit>()
+                                                .deleteFile(f);
+                                          },
+                                          child: const Text(
+                                            'Удалить',
+                                            style: TextStyle(color: Colors.red),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                              );
+                            },
+                          ),
+                        ],
+                      ),
+                    );
+                  }),
+                ],
+              ),
+            ),
           );
         }).toList(),
   );
 }
 
 IconData _getFileIcon(String filename) {
-  final ext = filename.toLowerCase().split('.').last;
+  if (filename.isEmpty) return Icons.insert_drive_file;
+  final lower = filename.toLowerCase();
+  final dot = lower.lastIndexOf('.');
+  final ext = dot >= 0 ? lower.substring(dot + 1) : '';
   switch (ext) {
     case 'pdf':
       return Icons.picture_as_pdf;
@@ -587,6 +650,9 @@ IconData _getFileIcon(String filename) {
     case 'jpeg':
     case 'png':
       return Icons.image;
+    case 'doc':
+    case 'docx':
+      return Icons.description;
     default:
       return Icons.insert_drive_file;
   }
@@ -635,8 +701,18 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
     formData.append('lastname', state.lastName.toJS);
 
     final request = web.XMLHttpRequest();
-    final origin = web.window.location.origin;
-    request.open('POST', '$origin/upload');
+    // Determine backend origin. When running Flutter dev server (chrome) the
+    // app is served from a different origin and /upload will 404. Fall back
+    // to localhost:5040 during local development so requests hit the backend.
+    final host = web.window.location.hostname;
+    final port = web.window.location.port;
+    final backendOrigin =
+        (host == 'localhost' || host == '127.0.0.1') && port != '5040'
+            ? 'http://localhost:5040'
+            : web.window.location.origin;
+    final uploadUrl = '$backendOrigin/upload';
+    debugPrint('Uploading to: $uploadUrl');
+    request.open('POST', uploadUrl);
     request.responseType = 'json';
 
     request.addEventListener(
@@ -668,6 +744,11 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
         }
 
         debugPrint('Upload failed: ${request.status}');
+        try {
+          debugPrint('Upload response: ${request.response}');
+        } catch (e) {
+          debugPrint('Unable to print upload response: $e');
+        }
         completer.complete(false);
       }.toJS,
     );
@@ -697,9 +778,15 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
       return;
     }
 
-    final origin = web.window.location.origin;
+    final host = web.window.location.hostname;
+    final port = web.window.location.port;
+    final backendOrigin =
+        (host == 'localhost' || host == '127.0.0.1') && port != '5040'
+            ? 'http://localhost:5040'
+            : web.window.location.origin;
     final url =
-        '$origin/delete_file?filename=${Uri.encodeComponent(file.newName!)}';
+        '$backendOrigin/delete_file?filename=${Uri.encodeComponent(file.newName!)}';
+    debugPrint('DELETE -> $url');
 
     final request = web.XMLHttpRequest();
     request.open('DELETE', url);
@@ -730,17 +817,30 @@ class DocumentUploadCubit extends Cubit<DocumentUploadState> {
   void downloadFile(UploadedFile file) {
     if (file.newName != null) {
       final anchor = web.HTMLAnchorElement();
-      final origin = web.window.location.origin;
-      anchor.href = '$origin/files/${Uri.encodeComponent(file.newName!)}';
+      final host = web.window.location.hostname;
+      final port = web.window.location.port;
+      final backendOrigin =
+          (host == 'localhost' || host == '127.0.0.1') && port != '5040'
+              ? 'http://localhost:5040'
+              : web.window.location.origin;
+      anchor.href =
+          '$backendOrigin/files/${Uri.encodeComponent(file.newName!)}';
+      debugPrint('Downloading file from: ${anchor.href}');
       anchor.setAttribute('download', file.newName!);
       anchor.click();
     }
   }
 
   void downloadAll() {
-    final origin = web.window.location.origin;
+    final host = web.window.location.hostname;
+    final port = web.window.location.port;
+    final backendOrigin =
+        (host == 'localhost' || host == '127.0.0.1') && port != '5040'
+            ? 'http://localhost:5040'
+            : web.window.location.origin;
     final url =
-        '$origin/download_zip?name=${Uri.encodeComponent(state.name)}&lastname=${Uri.encodeComponent(state.lastName)}';
+        '$backendOrigin/download_zip?name=${Uri.encodeComponent(state.name)}&lastname=${Uri.encodeComponent(state.lastName)}';
+    debugPrint('Downloading zip from: $url');
 
     final anchor = web.HTMLAnchorElement();
     anchor.href = url;
